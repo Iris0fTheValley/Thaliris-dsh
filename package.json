@@ -28,6 +28,7 @@
     "api.mjs",
     "core_bridge.py",
     "README.md",
+    "CORE-BASELINE.md",
     "CAPABILITIES.md",
     "CLIENT-CONTRACT.md",
     "cordis.patch.yml",

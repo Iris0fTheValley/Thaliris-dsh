@@ -6,7 +6,7 @@ The runtime package has optional native Remote and shared Web/Desktop client ent
 
 ## Install and configure
 
-Use Node.js `22.19+` or `24+`, Python 3.11 or newer, and a DSH build at source revision `639ed015397290b3745d163aafe02ffee4aa3f84`. Install the separate Thaliris Core distribution that provides `thaliris.core` and `thaliris.authority` into the Python environment configured for the plugin. The extracted plugin was verified against Core `0.4.2` at source revision `623745118ddcd1f67df4f6a269aa26a493ae998f`. Runtime, Remote API, and optional memory entries are disabled by default. Install the local bundles into a profile with the native Plugin Manager:
+Use Node.js `22.19+` or `24+`, Python 3.11 or newer, and a DSH build at source revision `639ed015397290b3745d163aafe02ffee4aa3f84`. Install the separate Thaliris Core `0.4.2` distribution from source revision `da663e86ffea1fc8d09ea9bbec3ec8da21eeef34`. It provides `thaliris.core` and `thaliris.authority` to the Python environment configured for the plugin. See [CORE-BASELINE.md](CORE-BASELINE.md) for package provenance and the extracted integration checks. Runtime, Remote API, and optional memory entries are disabled by default. Install the local bundles into a profile with the native Plugin Manager:
 
 ```text
 dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
@@ -26,11 +26,11 @@ Recovery uses exact native child correlation and durable terminal Session eviden
 
 Memory is disabled by default. The optional capability accepts replaceable async providers; `@thaliris/dsh-memory-local` adds a bounded text provider over native storage. There are no embeddings, vector or RAG system, credential manager, or automatic retrieval. Manual and review writes create Core proposals; auto writes require the separate persisted `autoAuthorized: true` opt-in. Removing either optional memory package leaves task routing and close available.
 
-The native composition, package-install, bridge, and client tests use a scripted LLM and pinned DSH source. They do not use online models or a current installed profile. Desktop shares the Web client bundle, but a Desktop binary was not launched. End-to-end browser diagnostics with an active Core task remain unverified.
+The extracted repository's bridge, native composition, packed package-install, and client checks use a scripted LLM and pinned DSH source. They do not use online models or a current installed profile. Separately, the original source repository's live Web integration was verified against Core source revision `256f760`: a real Core task exercised a fifth child, denied native root tools to the child, and closed `DONE`. That observation is not evidence that the extracted repository's package smoke launched a browser. Desktop shares the Web client bundle, but a Desktop binary was not launched.
 
 ## Development and verification
 
-Clone the pinned DSH source and the Core source or install the matching Core distribution. Set `DSH_SOURCE` to the DSH checkout, `THALIRIS_CORE_PATH` to the directory containing the source `thaliris` package, and `THALIRIS_TEST_PYTHON` to an isolated Python 3.11+ environment. Then run:
+Clone the pinned DSH source and the Core source or install the matching Core distribution. Set `DSH_SOURCE` to the DSH checkout, `THALIRIS_CORE_PATH` to the directory containing the source `thaliris` package, and `THALIRIS_TEST_PYTHON` to an isolated Python 3.11+ environment. The bridge and native source-composition checks use that source path. For the packed activation smoke, build a fresh Core wheel from the pinned upstream source and install it into the isolated Python environment; set `THALIRIS_TEST_CORE_PATH` to that installed package directory so the smoke checks the wheel itself. Then run:
 
 ```text
 npm run build:bundle
