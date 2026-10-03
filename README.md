@@ -6,7 +6,7 @@ The runtime package has optional native Remote and shared Web/Desktop client ent
 
 ## Install and configure
 
-Use Node.js `22.19+` or `24+`, Python 3.11 or newer, and a DSH build at source revision `639ed015397290b3745d163aafe02ffee4aa3f84`. Install the separate Thaliris Core `0.4.2` distribution from source revision `da663e86ffea1fc8d09ea9bbec3ec8da21eeef34`. It provides `thaliris.core` and `thaliris.authority` to the Python environment configured for the plugin. See [CORE-BASELINE.md](CORE-BASELINE.md) for package provenance and the extracted integration checks. Runtime, Remote API, and optional memory entries are disabled by default. Install the local bundles into a profile with the native Plugin Manager:
+Use Node.js `22.19+` or `24+`, Python 3.11 or newer, and a DSH build at source revision `639ed015397290b3745d163aafe02ffee4aa3f84`. Install the separate Thaliris Core `0.4.2` distribution from source revision `751ccea498ad89c6c77c622fb4efaee9be469326`. It provides `thaliris.core` and `thaliris.authority` to the Python environment configured for the plugin. See [CORE-BASELINE.md](CORE-BASELINE.md) for package provenance and the extracted integration checks. Runtime, Remote API, and optional memory entries are disabled by default. Install the local bundles into a profile with the native Plugin Manager:
 
 ```text
 dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
