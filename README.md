@@ -8,7 +8,7 @@ Runtime package 提供可选的 Remote API 和共享 Web/Desktop client。策略
 
 ## 安装与配置
 
-需要 Node.js 22.x 的 22.19 或更高版本，或 Node.js 24+，以及 Python 3.11+。该适配器对应 DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84，并使用 Thaliris Core 0.4.2，对应 Core source revision 751ccea498ad89c6c77c622fb4efaee9be469326。Core 为插件配置的 Python 环境提供 thaliris.core 和 thaliris.authority。包来源与提取仓库集成检查见 [CORE-BASELINE.md](CORE-BASELINE.md)。
+需要 Node.js 22.x 的 22.19 或更高版本，或 Node.js 24+，以及 Python 3.11+。该适配器对应 DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84，并使用 Thaliris Core 0.4.3，对应 Core source revision 7f4d9acf2e642e7b3c987d4ee45ebc6589d7cc15。Core 为插件配置的 Python 环境提供 thaliris.core 和 thaliris.authority。包来源与提取仓库集成检查见 [CORE-BASELINE.md](CORE-BASELINE.md)。
 
 Runtime、Remote API 和可选 memory entries 默认禁用。通过原生 Plugin Manager 将本地 archives 安装到指定 profile：
 
@@ -52,7 +52,7 @@ Thaliris 是一个 Git-native 的机械上下文与生命周期层。它不运�
 
 > 模型负责语义。机械层负责执行。
 
-0.4.2 runtime drift, current Host identity limits, and offline recovery:
+0.4.3 runtime drift, current Host identity limits, and offline recovery:
 [Runtime drift and recovery](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-runtime-recovery.md).
 
 Persistent human task intent, reconnect recovery, explicit Controller-direct

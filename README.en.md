@@ -10,7 +10,7 @@ The runtime package has optional Remote API and shared Web/Desktop client entrie
 
 ### Install and configure
 
-The package targets DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84 and Core 0.4.2 at source revision 751ccea498ad89c6c77c622fb4efaee9be469326. It requires Node.js 22.19+ in the 22.x line or 24+, plus Python 3.11+. Core supplies thaliris.core and thaliris.authority to the plugin's configured Python environment. Runtime, Remote API, and optional memory entries are disabled by default. Install the local archives through the native Plugin Manager:
+The package targets DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84 and Core 0.4.3 at source revision 7f4d9acf2e642e7b3c987d4ee45ebc6589d7cc15. It requires Node.js 22.19+ in the 22.x line or 24+, plus Python 3.11+. Core supplies thaliris.core and thaliris.authority to the plugin's configured Python environment. Runtime, Remote API, and optional memory entries are disabled by default. Install the local archives through the native Plugin Manager:
 
     dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
 
