@@ -100,11 +100,11 @@ Implementer 与 Focused Implementer 都负责实现，保持聚焦的 working se
 Investigator 可以拥有较大的私有 working set，将广泛扫描、调用点和残留引用
 压缩成事实、位置、证据和未知项。执行角色利用这些证据，并保留实现决策权。
 Reasoning Specialist 用于重构不明确的问题。Verifier 仅保留只读兼容，
-不推荐作为流程阶段。Focused Implementer 负责语义收敛；当核心实现和不变量已落实、
-会改变方向的未知已解决、证据能说明核心语义，而且剩余工作不太可能改变已定架构、因果模型、安全边界、
-范围或验收时，可以带上候选状态、证据限制和剩余任务返回 FINAL。测试通过本身不会切换角色。
-安装或 smoke 检查若仍用于证明核心语义，仍属于 Focused Implementer 的收敛工作。
-Root 决定后续是否仍需 Focused reasoning，或可将独立且确定的收尾交给普通 Implementer。
+不推荐作为流程阶段。Focused Implementer 负责候选方案的语义收敛，只继续仍可能改变核心语义方案的验证或修复；
+当硬不变量落实、会改变方向的未知已解决、聚焦证据能说明核心语义，而且没有剩余工作可能实质改变因果模型、
+已接受架构、契约、范围、验收或方向时，返回 FINAL。focused test 通过本身不够。到达该终点后，普通回归、
+lint/build、生成或文档同步、机械兼容、小型确定性修复、安装和 Git 收尾，在需要时交给新的普通 Implementer
+Workstream。若安装或 smoke 反馈仍能揭示语义缺陷，Focused Implementer 继续处理；FINAL 后的角色不能恢复。
 小型直接常规操作无需仅为流程而建立子角色；这仍受既有执行模式约束。
 
 Controller 的 model、effort、native profile 均无固定值，由 Host/用户选择。
@@ -205,7 +205,9 @@ Agent 否则需要重新调查的知识。若选定的候选值得保留，Root 
 也判断相关 INDEX 导航是否要更新，并在需要时更新。保留每条结论的来源和适用范围；新证据修订或取代旧结论时，在相关情况
 下保留旧结论的历史适用性。任务时间线、实现日志、普通提交历史、临时测试输出或瞬时失败不应作为日志
 保存；但如果它们能建立会改善、约束或加快未来决策或恢复的可复用知识，也不能自动排除。正式产品/协议
-文档和 README 的行为同步由 Implementer 或 Focused Implementer 负责。详细原始证据保留在规范来源、
+文档和 README 的行为同步由普通 Implementer 在其 Workstream 内完成。Focused Implementer 仅在文档变更有助于确立
+核心语义时同步；到达语义终点后，确定性的文档同步由 Controller 在需要时交给新的普通 Implementer Workstream。
+详细原始证据保留在规范来源、
 Artifact、Git 或 rollout 记录中；memory 只保留未来恢复所需的简明依据和引用。`CHANGED` 仅表示证据
 变化；当依赖该证据的决策不再可靠时，Controller 可要求重新验证。Reviewer 被选用时检查文档与实现的
 语义偏差。

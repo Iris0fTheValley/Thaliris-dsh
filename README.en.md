@@ -119,9 +119,12 @@ Curator reconciles selected candidates with the supplied sources and can report
 that existing knowledge is sufficient and no write is needed. When adding,
 revising, merging, splitting, narrowing, superseding, or deleting selected
 memory, Curator also judges whether relevant INDEX navigation needs an update
-and updates it when needed. Implementers
-keep product and protocol documentation and the README aligned with current
-behavior. Compatibility or specialized profiles may exist without becoming
+and updates it when needed. The ordinary Implementer keeps product and protocol
+documentation and the README aligned with verified behavior in the assigned
+Workstream. Focused Implementer synchronizes those documents only when needed
+to establish core semantics; after its endpoint, deterministic documentation
+synchronization belongs to a fresh ordinary Implementer Workstream when
+assigned. Compatibility or specialized profiles may exist without becoming
 mandatory workflow stages.
 
 Both Implementer and Focused Implementer execute implementation work. Keep the
@@ -130,6 +133,18 @@ compress broad scans, call sites, and residual references into facts, locations,
 evidence, and unknowns. Executors use that evidence while retaining implementation
 decisions. Reasoning Specialist reframes ill-defined problems. Verifier is a
 read-only compatibility role and is not recommended as a workflow stage.
+Focused Implementer owns semantic convergence of its candidate and continues
+only verification or repair that could still change the core semantic solution.
+It returns FINAL when hard invariants hold, decision-changing unknowns are
+resolved, focused evidence demonstrates core semantics, and no remaining work
+is likely to materially change the causal model, accepted architecture,
+contract, scope, acceptance, or direction. A focused-test PASS alone is not
+sufficient. After this endpoint, ordinary regression, lint, build, generated
+or documentation synchronization, mechanical compatibility, small deterministic
+fixes, installation, and Git closure belong to a fresh ordinary Implementer
+Workstream when assigned. Semantic defects exposed by installation or smoke
+feedback remain with Focused Implementer while they could change the core
+solution.
 
 Controller has no fixed model, effort, or native profile; Host/user selection
 applies. Investigator, Curator, and standard Implementer default to
