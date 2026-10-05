@@ -176,9 +176,9 @@ async function closedLoop() {
     for (const request of controllerRequests) {
       const system = systemText(request)
       assert.equal(occurrences(system, 'Thaliris Controller contract:'), 1, 'root receives the semantic contract exactly once per model request')
-      assert.match(system, /Models own semantics; the mechanical layer owns facts\./, 'actual root model input states semantic ownership')
-      assert.match(system, /For each semantic slice, decide under the selected execution mode whether you may handle the permitted work directly or should delegate\./, 'actual root model input leaves the delegation choice with the Controller')
-      assert.match(system, /if delegating, select the minimum suitable role and send only a bounded handoff/, 'role and bounded-handoff guidance applies only when delegating')
+      assert.match(system, /Thaliris records selected intent and mechanical observations, not semantic acceptance\./, 'actual root model input states semantic ownership')
+      assert.match(system, /Own task direction, scope, hard invariants, acceptance, context selection and next routing; implementation methods belong to executor\./, 'actual root model input leaves task routing with the Controller')
+      assert.match(system, /Send a decision-complete bounded handoff:/, 'actual root model input requires a selected bounded handoff')
     }
     const childRequests = fixture.mock.requests.filter(request => request.model === 'selected-child')
     assert.equal(childRequests.length, 2)

@@ -31,6 +31,7 @@
     "CORE-BASELINE.md",
     "CAPABILITIES.md",
     "CLIENT-CONTRACT.md",
+    "PROMPT-CONTRACT.md",
     "cordis.patch.yml",
     "cordis.patch.example.yml",
     "build-client.mjs",
@@ -52,6 +53,7 @@
     "build:bundle": "node build-bundle.mjs",
     "build:client": "node build-client.mjs",
     "test:native": "node tests/run-native.mjs",
+    "test:prompts": "node tests/prompt-contract.mjs",
     "test:client": "node tests/run-client.mjs",
     "test:install": "node tests/run-package-smoke.mjs"
   },

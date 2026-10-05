@@ -4,6 +4,11 @@ The shared Web/Desktop client is the `@thaliris/dsh-plugin/client` entry. It use
 
 ## Native configuration
 
+Initial prompt ownership and semantic endpoints are documented in
+[PROMPT-CONTRACT.md](PROMPT-CONTRACT.md). Controller guidance is the editable
+`policy.mjs` template; role seeds come from `role-templates.mjs` and the bundle
+generator. Template changes do not migrate existing user-edited role records.
+
 The bundle runtime entry ID is `thaliris`. Custom deployments may choose another ID; find its namespace in `remote.settings.describe()`. Its Config has one live field, `policy`. Python/Core/authority paths and provider/timeout deployment settings are ordinary native plugin configuration and absent from the live Settings form.
 
 `ctx.configForms.get<{ policy: UserPolicy }>('thaliris')` returns the native form. Use `getSnapshot()`, `subscribe()` and `mutate(ops, expectedRevision?)`. The native form serializes writes and supplies the latest Settings revision; a stale fixed revision is refused. Example atomic role edit:
