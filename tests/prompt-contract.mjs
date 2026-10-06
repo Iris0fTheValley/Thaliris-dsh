@@ -33,6 +33,14 @@ const policy = read('../policy.mjs')
 const controller = policy.match(/export const controllerTemplate = `([^`]+)`/s)?.[1]
 assert.ok(controller)
 concepts(controller, 'direction', 'scope', 'acceptance', 'next routing', 'methods belong to executor', 'decision-complete', 'authoritative source', 'derived relationships', 'verification entry', 'established inventory', 'fresh ordinary implementer', 'native completion is an observation')
+concepts(controller, 'stable narrative base language', 'precision-bearing original terms', 'quotations, distinctions and user formulations', 'materially blur, broaden, narrow or expand', 'forced monolingual translation', 'random language switching', 'bilingual repetition', 'output language requirements', 'compression and handoff')
+assert.equal(controller.split('stable narrative base language').length - 1, 1)
+for (const value of roleTemplates) assert.ok(!value.prompt.includes('stable narrative base language'))
+concepts(controller, 'authoritative artifact, source, revision and provenance', 'before delegation', 'later workstream', 'operational acceptance', 'project/package', 'fixtures', 'isolated smoke', 'packed artifacts', 'project-local', 'effective live host', 'global instructions', 'profiles', 'hooks', 'trust', 'separate host maintenance authority')
+concepts(controller, 'accepted contract uniquely determines', 'compatibility authority ambiguity remains semantic', 'production behavior and historical fixtures', 'representative evidence', 'does not mandate full regression', 'same semantic closure', 'fresh ordinary session', 'explicit inputs and independent acceptance', 'accumulated debugging state adds no benefit', 'green evidence, provenance, remaining acceptance and blockers, not raw history')
+for (const id of ['implementer', 'focused-implementer']) concepts(role(id).prompt, 'authority ambiguity', 'compatibility, ownership, security, lifecycle or contract', 'many failures, many files or long regression alone do not require escalation', 'project installation closure excludes effective live host', 'separate authority')
+concepts(role('focused-implementer').prompt, 'production behavior and historical fixtures', 'representative evidence', 'dependency to controller', 'do not classify that ambiguity as mechanical compatibility', 'full regression by default')
+assert.ok(!controller.includes('codex-install'))
 // Known native call chain: role persona is passed separately from selected
 // handoff. User grants/routes/schema are not replaced by prompt normalization.
 const native = read('../index.mjs')

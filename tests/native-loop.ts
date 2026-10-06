@@ -179,6 +179,9 @@ async function closedLoop() {
       assert.match(system, /Thaliris records selected intent and mechanical observations, not semantic acceptance\./, 'actual root model input states semantic ownership')
       assert.match(system, /Own task direction, scope, hard invariants, acceptance, context selection and next routing; implementation methods belong to executor\./, 'actual root model input leaves task routing with the Controller')
       assert.match(system, /Send a decision-complete bounded handoff:/, 'actual root model input requires a selected bounded handoff')
+      assert.equal(occurrences(system, 'stable narrative base language'), 1, 'precision representation has one Controller owner')
+      assert.match(system, /accepted contract uniquely determines/, 'deterministic rerouting preserves accepted behavior')
+      assert.match(system, /same semantic closure to a fresh ordinary session/, 'fresh closure does not require a new semantic objective')
     }
     const childRequests = fixture.mock.requests.filter(request => request.model === 'selected-child')
     assert.equal(childRequests.length, 2)
@@ -186,6 +189,7 @@ async function closedLoop() {
       const system = systemText(request)
       assert.equal(occurrences(system, 'Thaliris Controller contract:'), 0, 'root-only contract does not reach a child')
       assert.equal(occurrences(system, 'Thaliris child contract:'), 0)
+      assert.equal(occurrences(system, 'stable narrative base language'), 0, 'Controller representation rule is not duplicated in child prompts')
       assert.match(system, /EDITED_ROLE_PROMPT/)
       assert.match(system, /Execute only the selected bounded handoff\./, 'configured native route persona is preserved')
     }
