@@ -12,6 +12,8 @@ The runtime package has optional Remote API and shared Web/Desktop client entrie
 
 The package targets DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84 and Core 0.4.3 at source revision 7f4d9acf2e642e7b3c987d4ee45ebc6589d7cc15. It requires Node.js 22.19+ in the 22.x line or 24+, plus Python 3.11+. Core supplies thaliris.core and thaliris.authority to the plugin's configured Python environment. Runtime, Remote API, and optional memory entries are disabled by default. Install the local archives through the native Plugin Manager:
 
+This guide and its links to shared semantics do not automatically port updated Codex-specific admission, Hook, wait, profile, or semantic-acceptance contracts to this DSH pin. This repository claims compatibility only for the listed revisions and the checks documented here.
+
     dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
 
 Before enabling runtime, configure absolute pythonExecutable, corePath, and authorityDirectory values. corePath identifies the Core installation for that Python environment. Keep authorityDirectory outside the governed Workspace and do not store credentials in plugin configuration. Register the canonical Git root as a native Workspace, create or resume its persistent root Session, then bind the native Workspace ID and exact root in policy.workspaces.

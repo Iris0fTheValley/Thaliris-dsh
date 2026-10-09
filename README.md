@@ -8,7 +8,7 @@ Runtime package 提供可选的 Remote API 和共享 Web/Desktop client。策略
 
 ## 安装与配置
 
-需要 Node.js 22.x 的 22.19 或更高版本，或 Node.js 24+，以及 Python 3.11+。该适配器对应 DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84，并使用 Thaliris Core 0.4.3，对应 Core source revision 7f4d9acf2e642e7b3c987d4ee45ebc6589d7cc15。Core 为插件配置的 Python 环境提供 thaliris.core 和 thaliris.authority。包来源与提取仓库集成检查见 [CORE-BASELINE.md](CORE-BASELINE.md)。
+需要 Node.js 22.x 的 22.19 或更高版本，或 Node.js 24+，以及 Python 3.11+。该适配器对应 DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84，并使用 Thaliris Core 0.4.3，对应 Core source revision 7f4d9acf2e642e7b3c987d4ee45ebc6589d7cc15。Core 为插件配置的 Python 环境提供 thaliris.core 和 thaliris.authority。包来源与提取仓库集成检查见 [CORE-BASELINE.md](CORE-BASELINE.md)。本指南和后文的共享语义链接不会自动把更新后的 Codex-specific admission、Hook、wait、profile 或语义验收契约移植到此 DSH pin；本仓库仅声明列出的 revision 与已记录检查所覆盖的兼容性。
 
 Runtime、Remote API 和可选 memory entries 默认禁用。通过原生 Plugin Manager 将本地 archives 安装到指定 profile：
 
