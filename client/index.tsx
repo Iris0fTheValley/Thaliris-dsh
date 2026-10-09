@@ -46,8 +46,8 @@ function mountPage(ctx: Context): void {
     save: () => { void policy.save() },
     discard: () => policy.discard(),
     refresh: () => { void native.refresh() },
-    loadDiagnostics: sessionId => { void native.loadDiagnostics(sessionId) },
-    approveMemory: (sessionId, proposalId) => { void native.approveMemory(sessionId, proposalId) },
+    loadDiagnostics: (sessionId, taskId) => { void native.loadDiagnostics(sessionId, taskId) },
+    approveMemory: (sessionId, taskId, proposalId) => { void native.approveMemory(sessionId, taskId, proposalId) },
     openPlugin: packageName => ctx.pluginNavigation.openBundle(packageName),
     openSession: sessionId => ctx.uiWorkspace.openSession(sessionId as SessionId),
   }

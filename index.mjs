@@ -145,8 +145,8 @@ export function apply(ctx, config) {
   }
   register(TOOL_NAMES[0], 'Controller explicitly selects human intent. Native Settings is user policy, never task consent.', object({ goal: string, contract: contractSchema }),
     (args, agent, signal) => bridge(agent, 'start', args, signal))
-  register(TOOL_NAMES[1], 'Inspect Core task and unresolved reservation without inferring outcomes.', object({}),
-    (_args, agent, signal) => bridge(agent, 'inspect', {}, signal))
+  register(TOOL_NAMES[1], 'Inspect the explicitly selected Core task and unresolved reservation without inferring outcomes.', object({ task_id: string }),
+    (args, agent, signal) => bridge(agent, 'inspect', { task_id: args.task_id }, signal))
   register(TOOL_NAMES[2], 'Select one editable role and bounded handoff for a fresh native child.', object({ ...identitySchema, workstream: string, role: string, handoff: handoffSchema, route: routeSchema, memoryContext: memoryContextSchema }, [...Object.keys(identitySchema), 'workstream', 'role', 'handoff']), async (args, agent, signal) => {
     const policy = readPolicy(config), role = selectedRole(policy, args.role)
     if (!role.context.handoff) throw new Error('THALIRIS_ROLE_HANDOFF_DENIED')
@@ -161,7 +161,7 @@ export function apply(ctx, config) {
       const info = await ctx.llm.resolveModelInfo(route.provider, route.model, signal)
       if (route.reasoningEffort !== undefined && !info.reasoning?.efforts.some(effort => effort.id === route.reasoningEffort)) throw new Error('THALIRIS_MODEL_CAPABILITY_NOT_ALLOWED')
     }
-    const inspected = await bridge(agent, 'inspect', {}, signal)
+    const inspected = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
     if (inspected.contract.execution_mode !== 'delegated') throw new Error('THALIRIS_DELEGATED_INTENT_REQUIRED')
     const bound = await binding(agent)
     const selectedMemory = []
@@ -170,7 +170,7 @@ export function apply(ctx, config) {
       if (selection.operation === 'read' && typeof selection.key !== 'string' || selection.operation === 'search' && (typeof selection.query !== 'string' || !Number.isSafeInteger(selection.limit))) throw new Error('THALIRIS_MEMORY_SELECTION_REQUIRED')
       selectedMemory.push({ selection, result: await memory(selection, agent, signal, selection.operation) })
     }
-    const prompt = JSON.stringify({ workstream: args.workstream, role: role.id, ...args.handoff, ...(selectedMemory.length ? { memory_context: selectedMemory } : {}) })
+    const prompt = JSON.stringify({ task_id: args.task_id, workstream: args.workstream, role: role.id, ...args.handoff, ...(selectedMemory.length ? { memory_context: selectedMemory } : {}) })
     const selected = { workstream: args.workstream, role: role.id, handoff_sha256: createHash('sha256').update(prompt).digest('hex'), correlation: `thaliris:${randomUUID()}` }
     let begun = await bridge(agent, 'begin', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify(selected) }, signal)
     let run
@@ -179,15 +179,15 @@ export function apply(ctx, config) {
         toolFilter: { allow: role.tools, deny: TOOL_NAMES }, ...(route ? { agentOptions: route } : {}), persona: role.prompt })
       runs.add(run)
       if (!run.localAgent || run.localAgent.id !== run.id || run.localAgent.session.header.parentSession !== agent.id || run.localAgent.session.header.isSeeded !== false) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
-      childGrants.set(run.localAgent, { roleId: role.id, parent: agent, bound })
+      childGrants.set(run.localAgent, { roleId: role.id, parent: agent, bound, taskId: args.task_id })
       // Commit observed ID immediately, before awaiting the result. Catalog label covers the preceding crash window.
       await ctx.sessionPersistence.flush()
-      const beforeBind = await bridge(agent, 'inspect', {}, signal)
+      const beforeBind = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       begun = await bridge(agent, 'bind', { task_id: args.task_id, base_revision: beforeBind.state.revision, observation: JSON.stringify({ ...selected, child_id: run.id }) }, signal)
       const result = await run.result
       await ctx.sessionPersistence.flush()
       const observed = { ...selected, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
-      const beforeFinish = await bridge(agent, 'inspect', {}, signal)
+      const beforeFinish = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       const ack = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
       const value = { ...ack, child_id: run.id, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', output: result.output }
       if (result.stopReason !== 'completed') throw new Error('THALIRIS_NATIVE_CHILD_FAILED: ' + JSON.stringify(value))
@@ -222,7 +222,7 @@ export function apply(ctx, config) {
     } finally { await handle.close() }
   }
   async function reconcile(agent, args, signal) {
-    const inspected = await bridge(agent, 'inspect', {}, signal)
+    const inspected = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
     if (inspected.state.task_id !== args.task_id || inspected.state.revision !== args.base_revision) throw new Error('TASK_ID_OR_REVISION_CONFLICT')
     if (inspected.state.active_work.length !== 1) throw new Error('THALIRIS_RESERVATION_REQUIRED')
     const reservation = JSON.parse(inspected.state.active_work[0])
@@ -236,7 +236,8 @@ export function apply(ctx, config) {
     })
 
   async function memory(args, agent, signal, operation) {
-    const policy = readPolicy(config), grant = childGrants.get(agent)
+    const policy = readPolicy(config), grant = childGrants.get(agent), parent = grant?.parent ?? agent
+    if (operation === 'write' && grant && args.task_id !== grant.taskId) throw new Error('THALIRIS_TASK_ID_CONFLICT')
     const role = grant && selectedRole(policy, grant.roleId)
     if (grant && (!role.context.memory || !role.tools.includes(operation === 'read' ? MEMORY_TOOLS[0] : operation === 'search' ? MEMORY_TOOLS[1] : MEMORY_TOOLS[2]))) throw new Error('THALIRIS_MEMORY_PERMISSION_DENIED')
     const permission = operation === 'write' ? 'write' : 'read'
@@ -244,10 +245,13 @@ export function apply(ctx, config) {
     if (policy.memory.mode === 'disabled' || !policy.memory.providers.includes(args.provider) || !allowed.includes(args.provider)) throw new Error('THALIRIS_MEMORY_PERMISSION_DENIED')
     const bound = grant?.bound ?? await binding(agent)
     if (operation === 'write' && policy.memory.mode === 'auto' && policy.memory.autoAuthorized !== true) throw new Error('THALIRIS_MEMORY_AUTO_OPT_IN_REQUIRED')
+    if (operation === 'write' && policy.memory.mode === 'auto') {
+      const selected = await bridge(parent, 'inspect', { task_id: args.task_id }, signal)
+      if (selected.state.task_id !== args.task_id) throw new Error('THALIRIS_TASK_ID_CONFLICT')
+    }
     if (operation === 'write' && policy.memory.mode !== 'auto') {
-      const parent = grant?.parent ?? agent
-      const proposal = { proposal_id: randomUUID(), provider: args.provider, key: args.key, text: args.text, provenance: args.provenance, role: grant?.roleId ?? 'Controller', workspaceId: bound.workspaceId, policy: policy.memory.mode }
-      const acknowledgement = await bridge(parent, 'proposal', { observation: JSON.stringify(proposal) }, signal)
+      const proposal = { task_id: args.task_id, proposal_id: randomUUID(), provider: args.provider, key: args.key, text: args.text, provenance: args.provenance, role: grant?.roleId ?? 'Controller', workspaceId: bound.workspaceId, policy: policy.memory.mode }
+      const acknowledgement = await bridge(parent, 'proposal', { task_id: args.task_id, observation: JSON.stringify(proposal) }, signal)
       return { proposed: true, proposal_id: proposal.proposal_id, ...acknowledgement }
     }
     const capability = ctx.get('thalirisMemory')
@@ -257,26 +261,26 @@ export function apply(ctx, config) {
   const bounds = { maxBytes: { type: 'integer', minimum: 1, maximum: 65536 } }
   register(MEMORY_TOOLS[0], 'Explicit bounded memory read under user provider and role grants.', object({ provider: string, key: string, ...bounds }), (args, agent, signal) => memory(args, agent, signal, 'read'), true)
   register(MEMORY_TOOLS[1], 'Explicit bounded provider search; never ambient context injection.', object({ provider: string, query: string, limit: { type: 'integer', minimum: 1, maximum: 20 }, ...bounds }), (args, agent, signal) => memory(args, agent, signal, 'search'), true)
-  register(MEMORY_TOOLS[2], 'Propose a memory write. Only persisted explicitly authorized auto policy writes immediately.', object({ provider: string, key: string, text: string, provenance: string }), (args, agent, signal) => memory(args, agent, signal, 'write'), true)
+  register(MEMORY_TOOLS[2], 'Propose a memory write for the explicitly selected task. Only persisted explicitly authorized auto policy writes immediately.', object({ task_id: string, provider: string, key: string, text: string, provenance: string }), (args, agent, signal) => memory(args, agent, signal, 'write'), true)
   // Host projection/approval seam; user configuration stays on native Settings.
   ctx.provide('thaliris', {
     templates: () => import('./policy.mjs').then(module => structuredClone(module.roleTemplates)),
     providers: () => ctx.get('thalirisMemory')?.list() ?? [],
     toolCatalog: () => ctx.tools.schemas().map(({ name, description }) => ({ name, description })),
-    diagnostics: async (sessionId, signal) => withNativeRoot(sessionId, signal, async agent => {
-      const task = await bridge(agent, 'inspect', {}, signal)
+    diagnostics: async (sessionId, taskId, signal) => withNativeRoot(sessionId, signal, async agent => {
+      const task = await bridge(agent, 'inspect', { task_id: taskId }, signal)
       return { task, workspace: await binding(agent), configurationRevision: ctx.get('settings')?.describe({ redactSecrets: true }).find(row => row.ns === ctx.get('configEditor')?.entries().find(entry => entry.fiber?.runtime?.name === name)?.options.id)?.revision ?? null, permissions: { memory: readPolicy(config).memory, roles: readPolicy(config).roles.map(({ id, enabled, tools, memory, context, modelPolicy }) => ({ id, enabled, tools, memory, context, modelPolicy })) },
         providers: ctx.get('thalirisMemory')?.list() ?? [], reservations: await Promise.all(task.state.active_work.map(async value => ({ reservation: JSON.parse(value), native: await nativeObservation(agent, JSON.parse(value), signal, false) }))) }
     }),
-    approveMemory: async (sessionId, proposalId, signal) => withNativeRoot(sessionId, signal, async agent => {
+    approveMemory: async (sessionId, taskId, proposalId, signal) => withNativeRoot(sessionId, signal, async agent => {
       const bound = await binding(agent), policy = readPolicy(config)
-      const task = await bridge(agent, 'inspect', {}, signal)
+      const task = await bridge(agent, 'inspect', { task_id: taskId }, signal)
       const proposal = task.state.pending_results.map(value => { try { return JSON.parse(value) } catch { return null } }).find(value => value?.proposal_id === proposalId)
-      if (!proposal || proposal.workspaceId !== bound.workspaceId || policy.memory.mode === 'disabled' || !policy.memory.providers.includes(proposal.provider) || !policy.memory.controllerWrite.includes(proposal.provider)) throw new Error('THALIRIS_MEMORY_PERMISSION_DENIED')
+      if (!proposal || (proposal.task_id !== undefined && proposal.task_id !== taskId) || proposal.workspaceId !== bound.workspaceId || policy.memory.mode === 'disabled' || !policy.memory.providers.includes(proposal.provider) || !policy.memory.controllerWrite.includes(proposal.provider)) throw new Error('THALIRIS_MEMORY_PERMISSION_DENIED')
       const capability = ctx.get('thalirisMemory')
       if (!capability) throw new Error('THALIRIS_MEMORY_CAPABILITY_UNAVAILABLE')
       const value = await capability.invoke(proposal.provider, 'write', { ...proposal, ...bound, signal, maxBytes: 16384 })
-      const recorded = await bridge(agent, 'proposal', { observation: JSON.stringify({ approval_id: randomUUID(), proposal_id: proposal.proposal_id, provider: proposal.provider, workspaceId: bound.workspaceId, outcome: 'provider-write-observed', provenance: 'native-client-approval' }) }, signal)
+      const recorded = await bridge(agent, 'proposal', { task_id: taskId, observation: JSON.stringify({ approval_id: randomUUID(), proposal_id: proposal.proposal_id, provider: proposal.provider, workspaceId: bound.workspaceId, outcome: 'provider-write-observed', provenance: 'native-client-approval' }) }, signal)
       return { value, recorded: true, ...recorded }
     }),
   })

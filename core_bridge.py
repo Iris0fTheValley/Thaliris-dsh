@@ -7,10 +7,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
 MAX_REQUEST_BYTES = 262144
+
+
+def validate_authority_directory(root: Path, directory: Path) -> None:
+    resolved_root = root.resolve()
+    if directory.resolve().is_relative_to(resolved_root) or any(
+        _is_link_or_junction(path) for path in (directory, *directory.parents)
+    ):
+        raise ValueError("TASK_AUTHORITY_EXTERNAL_LOCATION_UNSAFE")
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        info = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 def dispatch(request: dict) -> dict:
@@ -32,9 +51,10 @@ def dispatch(request: dict) -> dict:
     root = Path(request["root"]).resolve()
     if core._repo_root(root) != root:
         raise ValueError("BRIDGE_REPOSITORY_ROOT_REQUIRED")
-    store = AuthorityStore(root, Path(request["authority_directory"]), protected_paths=(".context/config.json",))
-    # Validate the external location before even initializing the workspace.
-    store.path()
+    authority_directory = Path(request["authority_directory"])
+    # Check only the storage directory here. A path without Task ID selects
+    # the legacy workspace anchor, which must not gate an independent task.
+    validate_authority_directory(root, authority_directory)
     args = request["arguments"]
     if not isinstance(args, dict):
         raise ValueError("INVALID_BRIDGE_ARGUMENTS")
@@ -45,27 +65,34 @@ def dispatch(request: dict) -> dict:
         validate_contract(args["contract"])
         if not isinstance(args["goal"], str) or not args["goal"].strip() or len(args["goal"]) > 16384:
             raise ValueError("INVALID_GOAL")
-        prior = store.read()
-        if prior is not None and prior["status"] == "ACTIVE":
-            raise ValueError("TASK_AUTHORITY_ALREADY_ACTIVE")
         core.init(root)
         result = core.task_start(root, args["goal"], None, None, actor="dsh:" + native_id)
+        task_id = result["task_id"]
+        core.select_task(root, task_id)
         # Failure here leaves the ACTIVE Core ledger intact for operator diagnosis.
         state = core.task_show(root)["state"]
+        store = AuthorityStore(root, authority_directory, protected_paths=(".context/config.json",), task_id=task_id)
+        # Validate this task target without consulting an unrelated legacy anchor.
+        store.path()
         store.establish(state, args["contract"], adapter_fields={"dsh_controller_id": native_id, "dsh_workspace_id": workspace_id})
         return result
     if operation not in {"inspect", "begin", "bind", "finish", "reconcile", "proposal", "close"}:
         raise ValueError("UNSUPPORTED_BRIDGE_OPERATION")
+    task_id = args.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise ValueError("TASK_ID_REQUIRED")
+    core.select_task(root, task_id)
+    store = AuthorityStore(root, authority_directory, protected_paths=(".context/config.json",), task_id=task_id)
     record = store.check()
-    if record is None or record.get("dsh_controller_id") != native_id or record.get("dsh_workspace_id") != workspace_id:
+    if record is None or record.get("task_id") != task_id or record.get("dsh_controller_id") != native_id or record.get("dsh_workspace_id") != workspace_id:
         raise ValueError("DSH_CONTROLLER_MISMATCH_OR_INACTIVE")
     state = core.task_show(root)["state"]
     if operation == "inspect":
-        if args:
+        if set(args) != {"task_id"}:
             raise ValueError("INVALID_INSPECT_ARGUMENTS")
         return {"ok": True, "state": state, "contract": record["contract"]}
     if operation == "proposal":
-        if set(args) != {"observation"} or not isinstance(args["observation"], str) or len(args["observation"]) > 3500:
+        if set(args) != {"task_id", "observation"} or not isinstance(args["observation"], str) or len(args["observation"]) > 3500:
             raise ValueError("INVALID_MEMORY_PROPOSAL")
         result = update(core, root, native_id, state["revision"], {"pending_results": [*state["pending_results"], args["observation"]]})
         store.checkpoint()

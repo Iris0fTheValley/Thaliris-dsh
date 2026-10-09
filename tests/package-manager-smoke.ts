@@ -227,7 +227,7 @@ try {
     },
   })
   assert.ok(started)
-  let task: any = await execute('thaliris_task_inspect', {})
+  let task: any = await execute('thaliris_task_inspect', { task_id: started.task_id })
   assert.equal(task.state.status, 'ACTIVE')
 
   stage = 'remove optional memory and inspect task'
@@ -238,7 +238,7 @@ try {
   await setPluginEnabled('@thaliris/dsh-memory', false)
   assertApplied(await (await manager()).setBundleEnabled('@thaliris/dsh-memory', false), 'remove memory capability from profile')
   assert.ok(owner.get('thaliris'), 'the Core runtime must remain active after optional memory removal')
-  task = await execute('thaliris_task_inspect', {})
+  task = await execute('thaliris_task_inspect', { task_id: started.task_id })
   assert.equal(task.state.status, 'ACTIVE')
   const closed = await execute('thaliris_task_close', {
     task_id: task.state.task_id, base_revision: task.state.revision,

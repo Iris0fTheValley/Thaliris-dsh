@@ -63,8 +63,8 @@ The contribution uses native strict input codecs and the Host's SRC Remote metho
 | `templates()` | none | Detached initial editable role templates; does not change stored roles |
 | `providers()` | none | Current registered `[{id,name}]`; empty when capability/providers absent |
 | `toolCatalog()` | none | Current native tool registry `[{name,description}]` |
-| `diagnostics(sessionId, signal?)` | Native root Session ID | `{task:{state,contract},workspace:{root,workspaceId},configurationRevision:number|null,permissions:{memory,roles},providers,reservations:[{reservation,native}]}` |
-| `approveMemory(sessionId, proposalId, signal?)` | Native root Session and selected Core proposal ID | Provider write result and Core acknowledgement; records native-client approval observation under current grants |
+| `diagnostics(sessionId, taskId, signal?)` | Native root Session ID and explicit Core Task ID returned by `thaliris_task_start` | `{task:{state,contract},workspace:{root,workspaceId},configurationRevision:number|null,permissions:{memory,roles},providers,reservations:[{reservation,native}]}` |
+| `approveMemory(sessionId, taskId, proposalId, signal?)` | Native root Session, explicit Core Task ID, and proposal ID | Provider write result and Core acknowledgement; records native-client approval observation under current grants |
 
 Diagnostics uses current Core state/intent, native catalog/terminal Session evidence and live Settings. `configurationRevision:null` means native Settings is absent/unavailable; it is not revision zero. Resident child evidence may remain UNKNOWN. Re-query on native task/session activity or an explicit user refresh; never infer Completed from a missing card or catalog activity. No mutable diagnostic state is stored.
 
@@ -75,10 +75,14 @@ Memory proposals are JSON records in `task.state.pending_results`, distinguished
 The Controller's native tool calls are independent of UI:
 
 - `thaliris_task_start({goal,contract})` selects actual human intent and execution mode.
-- `thaliris_task_inspect({})` reads Core state/contract.
+- `thaliris_task_inspect({task_id})` reads only the explicitly selected Core task and contract. A native root Session may have multiple independent Core tasks; never infer a current task from its Workspace or another task's ACTIVE state.
 - `thaliris_workstream({task_id,base_revision,workstream,role,handoff,route?,memoryContext?})` takes an enabled role ID. `handoff` has goal/scope/invariants/acceptance/context strings. Allowed model mode requires the supplied route; inherit forbids an override. `memoryContext` is at most four explicit selections `{provider,operation:'read'|'search',key? ,query?,limit?,maxBytes}`; bytes 1–16384 and search limit 1–20. Results reach only that selected handoff and require Controller plus selected role grants/context permission. No ambient memory is injected.
 - `thaliris_reconcile({task_id,base_revision,action:'check'|'reconcile'|'cancel-reconcile'})` reads exact native correlation/terminal evidence. Check never releases. Reconcile only releases proven terminal work and preserves reservation/evidence. Cancel-reconcile handles an exact resident native child first. UNKNOWN remains reserved; no broader abandon endpoint exists.
 - `thaliris_task_close({task_id,base_revision,decision})` records Controller acceptance; unresolved work blocks it.
+
+Task IDs returned by start select Core state, authority, reservation, proposal and approval records for each subsequent call. Starting a new task in the same Workspace creates an independent ledger and authority anchor even when an older task remains ACTIVE/UNKNOWN or has an unresolved reservation. Such old-task observations do not block a different Task ID. A missing or damaged selected task authority remains an error for that task and does not select another task. The `task_id` field is required for `thaliris_memory_propose`; every write validates the selected task and its current Authority before appending a proposal or invoking a provider. Child writes must also match the exact Task ID granted to that child. Read/search remain explicit provider calls and do not need a Core task selection. Memory proposal and approval records are appended to the selected task without migration from another task.
+
+The Diagnostics page requires both the native root Session and the explicit Task ID. It does not auto-select a Workspace task or silently reuse an earlier Task ID when the selected Session changes. With no Core task catalog in DSH, users can supply the ID returned by `thaliris_task_start`.
 
 Optional memory tools read/search under explicit byte/item bounds and propose writes. Children need native tool allowlist membership and current enabled role grants/context permission. The model-facing tools expose no policy mutation or approval endpoint. Tasks/close/routing remain usable after memory capability removal.
 

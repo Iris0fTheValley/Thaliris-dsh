@@ -1,5 +1,6 @@
-import { cpSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { cpSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -24,6 +25,8 @@ const pkg = temporary
 const tests = join(pkg, 'tests')
 const upstreamNodeModules = join(source, 'packages', 'client', 'ui-settings-subagent', 'node_modules')
 const dependencyLink = join(pkg, 'node_modules')
+const requireDomain = createRequire(resolve(source, 'packages/storage/storage-domain/package.json'))
+const zodDirectory = dirname(requireDomain.resolve('zod'))
 mkdirSync(join(pkg, 'client'), { recursive: true })
 mkdirSync(tests, { recursive: true })
 try {
@@ -32,7 +35,11 @@ try {
   copyFileSync(join(adapterRoot, 'remote.d.ts'), join(pkg, 'remote.d.ts'))
   copyFileSync(join(adapterRoot, 'remote.d.mts'), join(pkg, 'remote.d.mts'))
   copyFileSync(join(adapterRoot, 'tests', 'shared-client.spec.tsx'), join(tests, 'shared-client.spec.tsx'))
-  symlinkSync(upstreamNodeModules, dependencyLink, 'junction')
+  mkdirSync(dependencyLink)
+  for (const entry of readdirSync(upstreamNodeModules)) {
+    symlinkSync(join(upstreamNodeModules, entry), join(dependencyLink, entry), 'junction')
+  }
+  symlinkSync(zodDirectory, join(dependencyLink, 'zod'), 'junction')
   const testPath = `${relative(resolve(source), tests).split(sep).join('/')}/shared-client.spec.tsx`
   const run = spawnSync(process.execPath, [
     join(source, 'node_modules', 'vitest', 'vitest.mjs'), 'run', '--config', 'vitest.config.ts', testPath,

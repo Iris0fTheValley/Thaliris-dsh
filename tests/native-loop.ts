@@ -32,6 +32,11 @@ const selectedContract = { human_instruction: 'Implement the selected bounded ex
 const handoff = { goal: 'Return the selected answer', scope: 'fixture only', invariants: 'Do not widen authority', acceptance: 'Return answer 42', context: 'SELECTED_CONTEXT_ONLY' }
 const signal = () => new AbortController().signal
 let call = 0
+async function taskStatePath(root: string, taskId: string) {
+  const legacy = join(root, '.context', 'state.json')
+  try { if (JSON.parse(await readFile(legacy, 'utf8')).task_id === taskId) return legacy } catch { /* the selected task uses its indexed ledger */ }
+  return join(root, '.context', 'tasks', taskId, 'state.json')
+}
 
 async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
   const directory = await mkdtemp(join(tmpdir(), 'thaliris-dsh-native-'))
@@ -66,20 +71,28 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
   const entry = ctx.loader.resolve(entryId)
   await ctx.loader.await()
   assert.ok(ctx.tools.get(names[0]!), 'Loader must import and activate the out-of-tree plugin')
-  const state = async () => JSON.parse(await readFile(join(workspace, '.context/state.json'), 'utf8'))
-  const authority = async () => {
-    const files = (await readdir(config.authorityDirectory)).filter(name => name.endsWith('.json'))
-    assert.equal(files.length, 1)
-    return JSON.parse(await readFile(join(config.authorityDirectory, files[0]!), 'utf8'))
-  }
-  const durableBytes = async () => {
-    const files = (await readdir(config.authorityDirectory)).filter(name => name.endsWith('.json'))
-    assert.equal(files.length, 1)
-    return {
-      ledger: await readFile(join(workspace, '.context/state.json')),
-      authority: await readFile(join(config.authorityDirectory, files[0]!)),
+  const state = async (taskId: string) => JSON.parse(await readFile(await taskStatePath(workspace, taskId), 'utf8'))
+  async function jsonFiles(directory: string): Promise<string[]> {
+    const result: string[] = []
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) result.push(...await jsonFiles(path))
+      else if (entry.isFile() && entry.name.endsWith('.json')) result.push(path)
     }
+    return result
   }
+  const authorityPath = async (taskId: string) => {
+    const files = await jsonFiles(config.authorityDirectory)
+    const matches = [] as string[]
+    for (const path of files) if (JSON.parse(await readFile(path, 'utf8')).task_id === taskId) matches.push(path)
+    assert.equal(matches.length, 1)
+    return matches[0]!
+  }
+  const authority = async (taskId: string) => JSON.parse(await readFile(await authorityPath(taskId), 'utf8'))
+  const durableBytes = async (taskId: string) => ({
+    ledger: await readFile(await taskStatePath(workspace, taskId)),
+    authority: await readFile(await authorityPath(taskId)),
+  })
   const execute = (name: string, args: any, agent: Agent | undefined = parent) => ctx.tools.execute({ callId: ToolCallId(`call-${++call}`), name, arguments: args, agent, signal: signal() })
   const clean = async () => {
     await ctx.fiber.dispose()
@@ -111,12 +124,14 @@ async function closedLoop() {
   let fixture: Awaited<ReturnType<typeof setup>>
   let child: Agent | undefined
   let observed: any
+  let selectedTaskId = ''
   let deniedInBody = 0
   const script = [
     textResponse('Parent completed warmup'),
     toolCallResponse('start', names[0], { goal: 'Bounded answer example', contract: selectedContract }),
     (options: any) => {
       const started = lastTool(options)
+      selectedTaskId = started.task_id
       assert.equal(started.status, 'ACTIVE')
       return toolCallResponse('work', names[2], { task_id: started.task_id, base_revision: started.revision, workstream: 'answer', role: 'Implementer', handoff })
     },
@@ -164,9 +179,9 @@ async function closedLoop() {
     await parent.whenIdle()
     await Promise.all(bodyDenials)
     assert.equal(deniedInBody, 5)
-    assert.equal((await fixture.state()).status, 'DONE', JSON.stringify({ parent: parent.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)), child: child?.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)) }))
-    assert.equal((await fixture.authority()).status, 'DONE')
-    assert.equal((await fixture.authority()).dsh_controller_id, parent.id)
+    assert.equal((await fixture.state(selectedTaskId)).status, 'DONE', JSON.stringify({ parent: parent.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)), child: child?.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)) }))
+    assert.equal((await fixture.authority(selectedTaskId)).status, 'DONE')
+    assert.equal((await fixture.authority(selectedTaskId)).dsh_controller_id, parent.id)
     assert.equal(ctx.agents.get(observed.child_id), undefined, 'native run dispose removes child')
     assert.equal(fixture.mock.requests.length, 7)
     assert.equal(fixture.mock.requests[0].model, 'parent')
@@ -199,7 +214,7 @@ async function closedLoop() {
         && message.content.some((block: any) => block.type === 'text' && block.text.includes('SELECTED_CONTEXT_ONLY')))
     assert.equal(selectedMessages.length, 1, 'fresh child receives one selected handoff message alongside native runtime context')
     const selectedText = selectedMessages[0].content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
-    assert.deepEqual(JSON.parse(selectedText), { workstream: 'answer', role: 'Implementer', ...handoff })
+    assert.deepEqual(JSON.parse(selectedText), { task_id: selectedTaskId, workstream: 'answer', role: 'Implementer', ...handoff })
 
     // Native Loader toggles remove precisely the plugin's effects, then remount.
     for (let cycle = 0; cycle < 2; cycle++) {
@@ -207,7 +222,7 @@ async function closedLoop() {
       await ctx.loader.await()
       for (const name of names) assert.equal(ctx.tools.get(name), undefined)
       assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name)).length, 0)
-      assert.equal((await fixture.state()).status, 'DONE', 'unload preserves durable closed ledger')
+      assert.equal((await fixture.state(selectedTaskId)).status, 'DONE', 'unload preserves durable closed ledger')
       assert.equal(ctx.agents.get(parent.id), parent)
       if (cycle === 0) {
         fixture.script.push(textResponse('ordinary answer while plugin unloaded'))
@@ -227,7 +242,7 @@ async function closedLoop() {
     assert.equal(fixture.mock.requests.length, 9)
     assert.equal(occurrences(systemText(fixture.mock.requests.at(-1)), 'Thaliris Controller contract:'), 1, 'reload restores one root prompt contribution')
     const other = await ctx.agentLoop.create(SessionId('other-native-root'), { provider: 'mock', model: 'parent' }, { cwd: fixture.config.root })
-    const denied = await fixture.execute(names[1]!, {}, other)
+    const denied = await fixture.execute(names[1]!, { task_id: selectedTaskId }, other)
     assert.equal(denied.isError, true)
     console.log('PASS Loader -> native Controller tools -> Python Core -> fresh native child -> explicit Controller close; filtering/body denial; unload/reload and ordinary native behavior')
   } finally { await fixture.clean() }
@@ -245,28 +260,29 @@ async function failureAndBoundary() {
     assert.match(JSON.stringify(result.content), /max-tokens/)
     assert.match(JSON.stringify(result.content), /native_completed.*false/)
     assert.equal(fixture.mock.requests[0].model, 'parent', 'omitted role route inherits native parent configuration')
-    assert.equal((await fixture.state()).status, 'ACTIVE')
-    const untouched = await readFile(join(fixture.config.root, '.context/state.json'), 'utf8')
+    assert.equal((await fixture.state(ack.task_id)).status, 'ACTIVE')
+    const statePath = await taskStatePath(fixture.config.root, ack.task_id)
+    const untouched = await readFile(statePath, 'utf8')
     const unknown = await fixture.execute(names[2]!, { task_id: ack.task_id, base_revision: 4, workstream: 'unknown', role: 'Unconfigured', handoff })
     assert.equal(unknown.isError, true)
-    assert.equal(await readFile(join(fixture.config.root, '.context/state.json'), 'utf8'), untouched)
+    assert.equal(await readFile(statePath, 'utf8'), untouched)
     const spoofed = await fixture.execute(names[3]!, { task_id: ack.task_id, base_revision: 4, decision: 'done', actor: 'native-controller' })
     assert.equal(spoofed.isError, true)
     const stale = await fixture.execute(names[3]!, { task_id: ack.task_id, base_revision: 1, decision: 'done' })
     assert.equal(stale.isError, true)
     const rival = await fixture.ctx.agentLoop.create(SessionId('rival'), { provider: 'mock', model: 'parent' }, { cwd: fixture.config.root })
-    assert.equal((await fixture.execute(names[1]!, {}, rival)).isError, true)
-    assert.equal((await fixture.execute(names[1]!, {})).isError, false, 'a rejected rival cannot bind the reloaded plugin')
+    assert.equal((await fixture.execute(names[1]!, { task_id: ack.task_id }, rival)).isError, true)
+    assert.equal((await fixture.execute(names[1]!, { task_id: ack.task_id })).isError, false, 'a rejected rival cannot bind the reloaded plugin')
     const definition = fixture.ctx.tools.get(names[0]!)!
     await assert.rejects(definition.execute({ goal: 'missing caller', contract: selectedContract }, { signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/)
     await assert.rejects(definition.execute({ goal: 'forged object', contract: selectedContract }, { agent: { ...fixture.parent }, signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/)
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: true })
-    assert.equal((await fixture.state()).status, 'ACTIVE')
+    assert.equal((await fixture.state(ack.task_id)).status, 'ACTIVE')
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: false })
     await fixture.ctx.loader.await()
     // Native root binding is restored from the Core anchor, not a supplied actor.
-    assert.equal((await fixture.execute(names[1]!, {}, rival)).isError, true)
-    assert.equal((await fixture.state()).status, 'ACTIVE')
+    assert.equal((await fixture.execute(names[1]!, { task_id: ack.task_id }, rival)).isError, true)
+    assert.equal((await fixture.state(ack.task_id)).status, 'ACTIVE')
     console.log('PASS native failure remains ACTIVE; role/arguments/revision/root boundaries; ACTIVE unload/reload preserves authority')
   } finally { await fixture.clean() }
 
@@ -275,7 +291,7 @@ async function failureAndBoundary() {
     const result: any = await seeded.execute(names[0]!, { goal: 'No seeding', contract: selectedContract })
     assert.equal((await seeded.execute(names[2]!, { task_id: result.value.task_id, base_revision: 1, workstream: 'fresh-only', role: 'Implementer', handoff })).isError, true)
     assert.equal(seeded.mock.requests.length, 0)
-    assert.equal((await seeded.state()).revision, 1)
+    assert.equal((await seeded.state(result.value.task_id)).revision, 1)
     console.log('PASS native seeding provider rejected before child start')
   } finally { await seeded.clean() }
 }
@@ -294,45 +310,46 @@ async function unloadActiveChild() {
     await fixture.ctx.loader.await()
     assert.equal((await operation).isError, true)
     assert.equal(fixture.ctx.agents.get(SessionId(childId!)), undefined)
-    assert.equal((await fixture.state()).status, 'ACTIVE')
-    assert.equal((await fixture.authority()).status, 'ACTIVE')
-    assert.equal((await fixture.state()).active_work.length, 1, 'interrupted work is not invented completion')
+    const taskId = started.value.task_id
+    assert.equal((await fixture.state(taskId)).status, 'ACTIVE')
+    assert.equal((await fixture.authority(taskId)).status, 'ACTIVE')
+    assert.equal((await fixture.state(taskId)).active_work.length, 1, 'interrupted work is not invented completion')
     for (const name of names) assert.equal(fixture.ctx.tools.get(name), undefined)
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: false })
     await fixture.ctx.loader.await()
-    const inspected: any = await fixture.execute(names[1]!, {})
+    const inspected: any = await fixture.execute(names[1]!, { task_id: taskId })
     assert.equal(inspected.isError, false)
     assert.equal(inspected.value.state.status, 'ACTIVE')
     const reservation = inspected.value.state.active_work
     assert.equal(reservation.length, 1)
-    const preserved = await fixture.durableBytes()
+    const preserved = await fixture.durableBytes(taskId)
     const blockedBegin = await fixture.execute(names[2]!, {
       task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision,
       workstream: 'second Workstream', role: 'Implementer', handoff,
     })
     assert.equal(blockedBegin.isError, true)
     assert.match(JSON.stringify(blockedBegin), /UNRESOLVED_ACTIVE_WORK_CANNOT_BEGIN/)
-    assert.deepEqual(await fixture.durableBytes(), preserved, 'rejected replacement leaves exact ledger and authority bytes intact')
+    assert.deepEqual(await fixture.durableBytes(taskId), preserved, 'rejected replacement leaves exact ledger and authority bytes intact')
     const blockedClose = await fixture.execute(names[3]!, {
       task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision,
       decision: 'The Controller claims completion.',
     })
     assert.equal(blockedClose.isError, true)
     assert.match(JSON.stringify(blockedClose), /UNRESOLVED_ACTIVE_WORK_CANNOT_CLOSE/)
-    assert.deepEqual(await fixture.durableBytes(), preserved, 'rejected close leaves exact ledger and authority bytes intact')
+    assert.deepEqual(await fixture.durableBytes(taskId), preserved, 'rejected close leaves exact ledger and authority bytes intact')
     assert.equal(childStarts, 1, 'unresolved reservation prevents a second native child launch')
-    assert.deepEqual((await fixture.state()).active_work, reservation, 'the original native reservation remains available for diagnosis')
-    assert.equal((await fixture.authority()).status, 'ACTIVE')
+    assert.deepEqual((await fixture.state(taskId)).active_work, reservation, 'the original native reservation remains available for diagnosis')
+    assert.equal((await fixture.authority(taskId)).status, 'ACTIVE')
     const check: any = await fixture.execute(names[4]!, { task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision, action: 'check' })
     assert.equal(check.isError, false, JSON.stringify(check))
     assert.equal(check.value.outcome, 'aborted')
     assert.equal(check.value.released, false)
-    assert.deepEqual(await fixture.durableBytes(), preserved)
+    assert.deepEqual(await fixture.durableBytes(taskId), preserved)
     const reconciled: any = await fixture.execute(names[4]!, { task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision, action: 'reconcile' })
     assert.equal(reconciled.isError, false, JSON.stringify(reconciled))
     assert.equal(reconciled.value.native_completed, false)
-    assert.equal((await fixture.state()).active_work.length, 0)
-    assert.equal((await fixture.state()).status, 'ACTIVE')
+    assert.equal((await fixture.state(taskId)).active_work.length, 0)
+    assert.equal((await fixture.state(taskId)).status, 'ACTIVE')
     console.log('PASS unload/reload preserves unresolved work; inspect succeeds; replacement and close reject without ledger, anchor or child mutation')
   } finally { await fixture.clean() }
 }

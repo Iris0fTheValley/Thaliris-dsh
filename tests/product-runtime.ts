@@ -38,6 +38,11 @@ const signal = () => new AbortController().signal
 const contract = { human_instruction: 'Product runtime fixture', boundary: 'Temporary fixtures only', invariants: 'Native durable identity, optional memory, editable policy', acceptance: 'Controller decides', execution_mode: 'delegated' }
 const role = { id: 'editable', name: 'My role', description: 'Fully editable', enabled: true, prompt: 'EXACT_EDITED_PROMPT', tools: [], modelPolicy: { mode: 'allowed', routes: [{ provider: 'mock', model: 'child' }] }, memory: { read: [], write: [] }, context: { handoff: true, memory: false } }
 const handoff = { goal: 'Fixture', scope: 'Text only', invariants: 'No ambient input', acceptance: 'Controller assesses', context: 'BOUNDED_SELECTION' }
+async function taskStatePath(root: string, taskId: string) {
+  const legacy = join(root, '.context', 'state.json')
+  try { if (JSON.parse(await readFile(legacy, 'utf8')).task_id === taskId) return legacy } catch { /* the selected task uses its indexed ledger */ }
+  return join(root, '.context', 'tasks', taskId, 'state.json')
+}
 async function harness(home: string, initialize: boolean, resumeRoot = true) {
   const dir = join(home, 'profiles', 'product'), workspace = join(home, 'repo'), secondRoot = join(home, 'second')
   if (initialize) {
@@ -80,7 +85,7 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
   const execute = (name: string, args: any, agent = parent) => ctx.tools.execute({ callId: ToolCallId(`product-${++call}`), name, arguments: args, agent, signal: signal() })
   const view = () => ctx.settings.describe().find(row => row.ns === 'thaliris')!
   const edit = async (ops: any[], expected = view().revision) => ctx.settings.mutate('thaliris', ops, expected)
-  const inspect = async () => { const value: any = await execute('thaliris_task_inspect', {}); assert.equal(value.isError, false); return value.value }
+  const inspect = async (taskId: string) => { const value: any = await execute('thaliris_task_inspect', { task_id: taskId }); assert.equal(value.isError, false); return value.value }
   return { ctx, parent, execute, edit, view, inspect, mock, workspace, secondRoot }
 }
 function bridge(home: string, operation: string, arguments_: any) {
@@ -90,6 +95,23 @@ async function initialize(home: string) {
   const h = await harness(home, true)
   try {
     const start: any = await h.execute('thaliris_task_start', { goal: 'Product fixture', contract }); assert.equal(start.isError, false, JSON.stringify(start))
+    const taskId = start.value.task_id
+    await writeFile(join(home, 'task-id'), taskId)
+    const orphanTask: any = await h.execute('thaliris_task_start', { goal: 'Old task with unresolved native reservation', contract })
+    assert.equal(orphanTask.isError, false, JSON.stringify(orphanTask))
+    const orphanTaskId = orphanTask.value.task_id
+    assert.notEqual(orphanTaskId, taskId)
+    const orphanReservation = JSON.stringify({ correlation: 'orphaned', workstream: 'old', role: 'editable', handoff_sha256: 'old-digest' })
+    const orphanBridge: any = bridge(home, 'begin', { workspaceId: (await h.ctx.workspaceRegistry.resolveByPath(h.workspace))!.id,
+      args: { task_id: orphanTaskId, base_revision: 1, observation: orphanReservation } })
+    assert.equal(orphanBridge.ok, true)
+    const independent: any = await h.execute('thaliris_task_start', { goal: 'Independent task beside old ACTIVE task', contract })
+    assert.equal(independent.isError, false, JSON.stringify(independent))
+    const independentId = independent.value.task_id
+    assert.notEqual(independentId, orphanTaskId)
+    assert.equal((await h.inspect(independentId)).state.active_work.length, 0)
+    assert.equal((await h.execute('thaliris_task_close', { task_id: independentId, base_revision: 1, decision: 'Independent task accepted.' })).isError, false)
+    assert.deepEqual((await h.inspect(orphanTaskId)).state.active_work, [orphanReservation])
     const unbound = await h.ctx.agentLoop.create(SessionId('unbound-controller'), { provider: 'mock', model: 'parent' }, { cwd: h.secondRoot })
     await h.ctx.sessionPersistence.flush()
     const originalWorkspaces = structuredClone(h.view().value.policy.workspaces)
@@ -118,18 +140,19 @@ async function initialize(home: string) {
     const clientTools: any = await (client.remote as any).thaliris.toolCatalog(); assert.equal(clientTools.ok, true)
     assert.ok(clientTools.value.some((tool: any) => tool.name === 'thaliris_task_start'))
     assert.deepEqual(Object.keys(clientTools.value[0] ?? {}).sort(), ['description', 'name'])
-    const clientDiagnostics: any = await (client.remote as any).thaliris.diagnostics(h.parent.id); assert.equal(clientDiagnostics.ok, true); assert.equal(clientDiagnostics.value.task.state.status, 'ACTIVE')
+    const clientDiagnostics: any = await (client.remote as any).thaliris.diagnostics(h.parent.id, taskId); assert.equal(clientDiagnostics.ok, true); assert.equal(clientDiagnostics.value.task.state.status, 'ACTIVE')
     await unmount(); await client.fiber.dispose()
     const templates: any = await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'templates', args: {} }); assert.ok(templates.some((value: any) => value.id === 'curator'))
-    const diagnostics: any = await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: h.parent.id } }); assert.equal(diagnostics.task.state.status, 'ACTIVE'); assert.equal(typeof diagnostics.configurationRevision, 'number')
-    const bytes = await readFile(join(h.workspace, '.context/state.json'))
+    const diagnostics: any = await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: h.parent.id, taskId } }); assert.equal(diagnostics.task.state.status, 'ACTIVE'); assert.equal(typeof diagnostics.configurationRevision, 'number')
+    const taskPath = await taskStatePath(h.workspace, taskId)
+    const bytes = await readFile(taskPath)
     const rev = h.view().revision
     await h.edit([{ op: 'set', path: ['policy', 'controllerPrompt'], value: 'VISIBLE_EDITED_CONTROLLER' }], rev)
     await assert.rejects(h.edit([{ op: 'set', path: ['policy', 'roles'], value: [] }], rev), /changed since/)
-    assert.deepEqual(await readFile(join(h.workspace, '.context/state.json')), bytes, 'Settings edits never rewrite task intent')
+    assert.deepEqual(await readFile(taskPath), bytes, 'Settings edits never rewrite task intent')
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [] }])
     assert.deepEqual((h.view().value as any).policy.roles, [])
-    let task = await h.inspect()
+    let task = await h.inspect(taskId)
     assert.equal((await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'removed', handoff })).isError, true)
     const unrelatedInvalid = { ...role, id: 'disabled-fixed-role', enabled: false, modelPolicy: { mode: 'fixed', routes: [] } }
     const selectedInvalid = { ...role, id: 'invalid-fixed-role', modelPolicy: { mode: 'fixed', routes: [] } }
@@ -144,8 +167,10 @@ async function initialize(home: string) {
     // Empty set persists; no hidden regeneration.
     const second = await h.ctx.agentLoop.create(SessionId('second-controller'), { provider: 'mock', model: 'parent' }, { cwd: h.secondRoot })
     await h.ctx.sessionPersistence.flush()
-    assert.equal((await h.execute('thaliris_task_start', { goal: 'Isolated second workspace', contract }, second)).isError, false)
-    assert.notEqual((await h.execute('thaliris_task_inspect', {}, second) as any).value.state.task_id, task.state.task_id)
+    const secondStart: any = await h.execute('thaliris_task_start', { goal: 'Isolated second workspace', contract }, second)
+    assert.equal(secondStart.isError, false)
+    const secondTaskId = secondStart.value.task_id
+    assert.notEqual((await h.execute('thaliris_task_inspect', { task_id: secondTaskId }, second) as any).value.state.task_id, task.state.task_id)
     assert.equal((await h.execute('thaliris_task_close', { task_id: task.state.task_id, base_revision: 1, decision: 'Cross-workspace attack' }, second)).isError, true)
     // Native, independently disposable provider plugins; remote-style fixture is injected at the same seam.
     const memoryFiber = await h.ctx.plugin(Memory)
@@ -154,47 +179,73 @@ async function initialize(home: string) {
     const externalFiber = await h.ctx.plugin({ inject: ['thalirisMemory'], apply(ctx: Context) { (ctx as any).thalirisMemory.register(ctx, { id: 'external', name: 'External async fixture', async read(request: any) { return { text: request.key === 'unicode' ? '😀'.repeat(10) : 'external' } }, async search() { return [{ key: 'remote', text: 'external' }] }, async write() { writes++; return { stored: true } } }) } })
     await assert.rejects((h.ctx as any).thalirisMemory.invoke('external', 'read', { key: 'unicode', signal: signal(), maxBytes: 31 }), /THALIRIS_MEMORY_RESULT_BOUND_EXCEEDED/)
     await h.edit([{ op: 'set', path: ['policy', 'memory'], value: { mode: 'manual', autoAuthorized: false, providers: ['thaliris-local', 'external'], controllerRead: ['thaliris-local', 'external'], controllerWrite: ['thaliris-local', 'external'] } }])
+    const manualBefore = (await h.inspect(taskId)).state.pending_results
+    const manualForeign: any = await h.execute('thaliris_memory_propose', { task_id: secondTaskId, provider: 'external', key: 'foreign', text: 'must not be proposed', provenance: 'foreign workspace fixture' })
+    const manualUnknown: any = await h.execute('thaliris_memory_propose', { task_id: '00000000-0000-4000-8000-000000000001', provider: 'external', key: 'unknown', text: 'must not be proposed', provenance: 'unknown task fixture' })
+    assert.equal(manualForeign.isError, true)
+    assert.equal(manualUnknown.isError, true)
+    assert.deepEqual((await h.inspect(taskId)).state.pending_results, manualBefore)
+    assert.equal(writes, 0, 'invalid manual task selections cannot trigger provider writes')
     assert.equal((await h.execute('thaliris_memory_read', { provider: 'external', key: 'x', maxBytes: 64 })).isError, false)
     assert.equal((await h.execute('thaliris_memory_read', { provider: 'forbidden', key: 'x', maxBytes: 64 })).isError, true)
     assert.equal((await h.execute('thaliris_memory_search', { provider: 'external', query: 'x', limit: 1, maxBytes: 1 })).isError, true)
-    const proposed: any = await h.execute('thaliris_memory_propose', { provider: 'external', key: 'x', text: 'selected', provenance: 'user-selected fixture' }); assert.equal(proposed.isError, false); assert.equal(writes, 0)
-    await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, proposalId: proposed.value.proposal_id } }); assert.equal(writes, 1)
+    const proposed: any = await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'selected', provenance: 'user-selected fixture' }); assert.equal(proposed.isError, false); assert.equal(writes, 0)
+    await assert.rejects(h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId: orphanTaskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
+    assert.equal(writes, 0, 'a proposal from one task cannot be approved through another task ID')
+    await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }); assert.equal(writes, 1)
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'suggest-review' }])
-    const suggestion: any = await h.execute('thaliris_memory_propose', { provider: 'thaliris-local', key: 'local', text: 'stored after review', provenance: 'fixture' }); assert.equal(suggestion.isError, false)
-    await (h.ctx as any).thaliris.approveMemory(h.parent.id, suggestion.value.proposal_id, signal())
+    const suggestion: any = await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'thaliris-local', key: 'local', text: 'stored after review', provenance: 'fixture' }); assert.equal(suggestion.isError, false)
+    await (h.ctx as any).thaliris.approveMemory(h.parent.id, taskId, suggestion.value.proposal_id, signal())
     assert.equal((await h.execute('thaliris_memory_read', { provider: 'thaliris-local', key: 'local', maxBytes: 512 }) as any).value.value.text, 'stored after review')
     // Auto remains refused at execution until both persisted user policy fields opt in.
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'auto' }])
-    assert.equal((await h.execute('thaliris_memory_propose', { provider: 'external', key: 'x', text: 'no consent', provenance: 'fixture' })).isError, true)
+    assert.equal((await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'no consent', provenance: 'fixture' })).isError, true)
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'autoAuthorized'], value: true }])
-    assert.equal((await h.execute('thaliris_memory_propose', { provider: 'external', key: 'x', text: 'consented', provenance: 'fixture' })).isError, false); assert.equal(writes, 2)
+    const autoBefore = (await h.inspect(taskId)).state.pending_results
+    const autoForeign: any = await h.execute('thaliris_memory_propose', { task_id: secondTaskId, provider: 'external', key: 'foreign', text: 'must not be written', provenance: 'foreign workspace fixture' })
+    const autoUnknown: any = await h.execute('thaliris_memory_propose', { task_id: '00000000-0000-4000-8000-000000000001', provider: 'external', key: 'unknown', text: 'must not be written', provenance: 'unknown task fixture' })
+    assert.equal(autoForeign.isError, true)
+    assert.equal(autoUnknown.isError, true)
+    assert.deepEqual((await h.inspect(taskId)).state.pending_results, autoBefore)
+    assert.equal(writes, 1, 'invalid auto task selections cannot trigger provider writes')
+    assert.equal((await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'consented', provenance: 'fixture' })).isError, false); assert.equal(writes, 2)
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'suggest-review' },
       { op: 'set', path: ['policy', 'roles'], value: [{ ...role, tools: [...Plugin.MEMORY_TOOLS], memory: { read: ['external'], write: [] }, context: { handoff: true, memory: true } }] }])
     script.push((options: any) => { assert.match(JSON.stringify(options.messages), /memory_context/); return toolCallResponse('read', 'thaliris_memory_read', { provider: 'external', key: 'x', maxBytes: 64 }) },
-      toolCallResponse('denied-write', 'thaliris_memory_propose', { provider: 'external', key: 'x', text: 'denied', provenance: 'fixture' }),
+      toolCallResponse('denied-write', 'thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'denied', provenance: 'fixture' }),
       (options: any) => { assert.match(JSON.stringify(options.messages), /MEMORY_PERMISSION_DENIED/); return textResponse('child permission fixture') })
-    task = await h.inspect()
+    task = await h.inspect(taskId)
     const childMemory: any = await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'memory-grants', handoff, memoryContext: [{ provider: 'external', operation: 'read', key: 'x', maxBytes: 64 }], route: { provider: 'mock', model: 'child' } })
     assert.equal(childMemory.isError, false, JSON.stringify(childMemory))
     await h.edit([{ op: 'set', path: ['policy', 'roles', '0', 'memory', 'write'], value: ['external'] }])
-    script.push(toolCallResponse('suggest', 'thaliris_memory_propose', { provider: 'external', key: 'x', text: 'child suggestion', provenance: 'selected child' }),
+    await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'auto' },
+      { op: 'set', path: ['policy', 'memory', 'autoAuthorized'], value: true }])
+    script.push(toolCallResponse('foreign-task-write', 'thaliris_memory_propose', { task_id: secondTaskId, provider: 'external', key: 'foreign', text: 'child cannot write another task', provenance: 'foreign child task fixture' }),
+      (options: any) => { assert.match(JSON.stringify(options.messages), /THALIRIS_TASK_ID_CONFLICT/); return textResponse('foreign Task ID rejected') })
+    task = await h.inspect(taskId)
+    const foreignGrant: any = await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'foreign-memory-task', handoff, route: { provider: 'mock', model: 'child' } })
+    assert.equal(foreignGrant.isError, false, JSON.stringify(foreignGrant))
+    assert.equal(writes, 2, 'a child grant cannot write to another task, even with auto mode authorized')
+    await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'suggest-review' }])
+    script.push(toolCallResponse('suggest', 'thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'child suggestion', provenance: 'selected child' }),
       (options: any) => { assert.match(JSON.stringify(options.messages), /proposal_id/); return textResponse('suggestion proposed') })
-    task = await h.inspect()
-    assert.equal((await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'memory-proposal', handoff, route: { provider: 'mock', model: 'child' } })).isError, false)
+    task = await h.inspect(taskId)
+    const childProposal: any = await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'memory-proposal', handoff, route: { provider: 'mock', model: 'child' } })
+    assert.equal(childProposal.isError, false, JSON.stringify(childProposal))
     assert.equal(writes, 2, 'Curator/child proposal cannot enable automatic writes')
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [] }])
     await localFiber.dispose(); assert.equal((h.ctx as any).thaliris.providers().length, 1)
     await externalFiber.dispose(); await memoryFiber.dispose()
     assert.equal((h.ctx as any).thaliris.providers().length, 0)
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [role] }])
-    task = await h.inspect(); script.push(textResponse('routing after memory uninstall'))
+    task = await h.inspect(taskId); script.push(textResponse('routing after memory uninstall'))
     assert.equal((await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'no-memory', handoff, route: { provider: 'mock', model: 'child' } })).isError, false)
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [] }])
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'disabled' }])
     assert.equal((await h.execute('thaliris_memory_read', { provider: 'external', key: 'x', maxBytes: 64 })).isError, true)
-    assert.equal((await h.execute('thaliris_task_close', { task_id: (await h.execute('thaliris_task_inspect', {}, second) as any).value.state.task_id, base_revision: 1, decision: 'Native task closes with memory absent' }, second)).isError, false)
+    assert.equal((await h.execute('thaliris_task_close', { task_id: secondTaskId, base_revision: 1, decision: 'Native task closes with memory absent' }, second)).isError, false)
     // Crash window: Core has reservation, native catalog has exact child, bind/finish never ran.
-    task = await h.inspect()
+    task = await h.inspect(taskId)
     const reservation = { workstream: 'crash-window', role: 'fixture', handoff_sha256: 'fixture-digest', correlation: 'thaliris:unique-crash-window' }
     const workspaceId = (await h.ctx.workspaceRegistry.resolveByPath(h.workspace))!.id
     const begun = bridge(home, 'begin', { workspaceId, args: { task_id: task.state.task_id, base_revision: task.state.revision, observation: JSON.stringify(reservation) } }); assert.equal(begun.ok, true)
@@ -207,11 +258,12 @@ async function initialize(home: string) {
   } finally { await h.ctx.fiber.dispose() }
 }
 async function restart(home: string) {
+  const taskId = (await readFile(join(home, 'task-id'), 'utf8')).trim()
   const unloaded = await harness(home, false, false)
   try {
     assert.equal(unloaded.ctx.agents.get(SessionId('persistent-controller')), undefined, 'fixture begins with no live Agent for the persisted root Session')
-    const diagnostics: any = await unloaded.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: 'persistent-controller' } })
-    assert.equal(diagnostics.task.state.status, 'ACTIVE', 'native diagnostics resumes the exact persisted root Agent and reads its current Core task')
+    const diagnostics: any = await unloaded.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: 'persistent-controller', taskId } })
+    assert.equal(diagnostics.task.state.status, 'ACTIVE', 'native diagnostics resumes the exact persisted root Agent and reads the explicitly selected Core task')
     assert.equal(diagnostics.workspace.workspaceId, (await unloaded.ctx.workspaceRegistry.resolveByPath(unloaded.workspace))!.id)
     assert.equal(unloaded.ctx.agents.get(SessionId('persistent-controller')), undefined, 'one-shot diagnostics disposes only the Agent handle it resumed')
     console.log('PASS Gateway diagnostics resumes and validates a persisted configured root Session, then disposes its owned Agent handle')
@@ -220,18 +272,18 @@ async function restart(home: string) {
   try {
     assert.deepEqual((h.view().value as any).policy.roles, [], 'deleted roles stay deleted after fresh process')
     assert.equal((h.view().value as any).policy.controllerPrompt, 'VISIBLE_EDITED_CONTROLLER')
-    const task = await h.inspect()
+    const task = await h.inspect(taskId)
     assert.equal(task.state.active_work.length, 1)
     const rival = await h.ctx.agentLoop.create(SessionId('unrelated-root'), { provider: 'mock', model: 'parent' }, { cwd: h.workspace }); await h.ctx.sessionPersistence.flush()
-    assert.equal((await h.execute('thaliris_task_inspect', {}, rival)).isError, true)
+    assert.equal((await h.execute('thaliris_task_inspect', { task_id: taskId }, rival)).isError, true)
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [
       { ...role, id: 'disabled-fixed-role', enabled: false, modelPolicy: { mode: 'fixed', routes: [] } },
     ] }])
-    const lifecycle = await h.inspect()
+    const lifecycle = await h.inspect(taskId)
     assert.equal(lifecycle.state.active_work.length, 1, 'disabled invalid role does not block lifecycle inspection')
     const reconciled: any = await h.execute('thaliris_reconcile', { task_id: lifecycle.state.task_id, base_revision: lifecycle.state.revision, action: 'reconcile' })
     assert.equal(reconciled.isError, false, JSON.stringify(reconciled)); assert.equal(reconciled.value.native_completed, true)
-    const state = (await h.inspect()).state
+    const state = (await h.inspect(taskId)).state
     assert.equal(state.active_work.length, 0); assert.ok(state.pending_results.some((value: string) => value.includes('Archived reservation:')))
     assert.equal((await h.execute('thaliris_task_close', { task_id: state.task_id, base_revision: state.revision, decision: 'Controller accepted native evidence after restart with memory removed' })).isError, false)
     console.log('PASS fresh process/runtime persisted native Workspace + same Session/new Agent Core continuation; rival denial; durable completed reconciliation; close without memory')

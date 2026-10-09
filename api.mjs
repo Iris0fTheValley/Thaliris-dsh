@@ -11,14 +11,14 @@ export default class ThalirisController extends TypertRemoteService {
   templates() { return this.ctx.thaliris.templates() }
   providers() { return this.ctx.thaliris.providers() }
   toolCatalog() { return this.ctx.thaliris.toolCatalog() }
-  diagnostics(sessionId, signal) {
-    identity(sessionId)
-    return this.ctx.thaliris.diagnostics(sessionId, signal)
+  diagnostics(sessionId, taskId, signal) {
+    identity(sessionId); identity(taskId)
+    return this.ctx.thaliris.diagnostics(sessionId, taskId, signal)
   }
   /** Human-client approval endpoint, deliberately absent from model tools. */
-  approveMemory(sessionId, proposalId, signal) {
-    identity(sessionId); identity(proposalId)
-    return this.ctx.thaliris.approveMemory(sessionId, proposalId, signal)
+  approveMemory(sessionId, taskId, proposalId, signal) {
+    identity(sessionId); identity(taskId); identity(proposalId)
+    return this.ctx.thaliris.approveMemory(sessionId, taskId, proposalId, signal)
   }
 }
 function identity(value) {

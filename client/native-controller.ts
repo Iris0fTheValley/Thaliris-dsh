@@ -136,7 +136,7 @@ export class NativeProjectionController {
     }
   }
 
-  async loadDiagnostics(sessionId: string): Promise<boolean> {
+  async loadDiagnostics(sessionId: string, taskId: string): Promise<boolean> {
     this.store.update(state => {
       state.diagnosticSessionId = sessionId
       state.diagnosticStatus = 'loading'
@@ -146,7 +146,7 @@ export class NativeProjectionController {
     try {
       const sessions = (this.ctx as unknown as { sessions: ISessions }).sessions
       const response = await sessions.using(sessionId as SessionId, { source: 'gateway' }, async () => {
-        return await this.ctx.remote.thaliris.diagnostics(sessionId)
+        return await this.ctx.remote.thaliris.diagnostics(sessionId, taskId)
       })
       if (!response.ok) throw new Error(remoteError(response))
       this.store.update(state => { state.diagnostics = response.value; state.diagnosticStatus = 'ready' })
@@ -160,7 +160,7 @@ export class NativeProjectionController {
     }
   }
 
-  async approveMemory(sessionId: string, proposalId: string): Promise<boolean> {
+  async approveMemory(sessionId: string, taskId: string, proposalId: string): Promise<boolean> {
     if (this.store.getSnapshot().approvalStatus === 'saving') return false
     this.store.update(state => {
       state.approvalStatus = 'saving'
@@ -170,11 +170,11 @@ export class NativeProjectionController {
     try {
       const sessions = (this.ctx as unknown as { sessions: ISessions }).sessions
       const response = await sessions.using(sessionId as SessionId, { source: 'gateway' }, async () => {
-        return await this.ctx.remote.thaliris.approveMemory(sessionId, proposalId)
+        return await this.ctx.remote.thaliris.approveMemory(sessionId, taskId, proposalId)
       })
       if (!response.ok) throw new Error(remoteError(response))
       this.store.update(state => { state.approvalReceipt = response.value; state.approvalStatus = 'ready' })
-      await this.loadDiagnostics(sessionId)
+      await this.loadDiagnostics(sessionId, taskId)
       return true
     } catch (error) {
       this.store.update(state => {

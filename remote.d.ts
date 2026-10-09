@@ -18,8 +18,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'thaliris/templates': () => Promise<RemoteResult<RoleRecord[]>>;
     'thaliris/providers': () => Promise<RemoteResult<{ id: string; name: string }[]>>;
     'thaliris/toolCatalog': () => Promise<RemoteResult<{ name: string; description: string }[]>>;
-    'thaliris/diagnostics': (sessionId: string, signal?: AbortSignal) => Promise<RemoteResult<JsonValue>>;
-    'thaliris/approveMemory': (sessionId: string, proposalId: string, signal?: AbortSignal) => Promise<RemoteResult<JsonValue>>;
+    'thaliris/diagnostics': (sessionId: string, taskId: string, signal?: AbortSignal) => Promise<RemoteResult<JsonValue>>;
+    'thaliris/approveMemory': (sessionId: string, taskId: string, proposalId: string, signal?: AbortSignal) => Promise<RemoteResult<JsonValue>>;
   }
   interface TypertRemoteNamespaceMap { thaliris: TypertRemoteNamespace<'thaliris'> }
 }

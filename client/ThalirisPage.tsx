@@ -19,10 +19,10 @@ export interface ThalirisPageFace {
   save: () => void
   discard: () => void
   refresh: () => void
-  loadDiagnostics: (sessionId: string) => void
+  loadDiagnostics: (sessionId: string, taskId: string) => void
   openPlugin: (packageName: string) => void
   openSession: (sessionId: string) => void
-  approveMemory: (sessionId: string, proposalId: string) => void
+  approveMemory: (sessionId: string, taskId: string, proposalId: string) => void
 }
 
 type Props = PropsRuntime<'plugins.item'> & PropsLocale<typeof NS> & InjectFace<ThalirisPageFace>
@@ -80,6 +80,7 @@ export function ThalirisPage(props: Props) {
   const [templateId, setTemplateId] = useState('')
   const [workspaceId, setWorkspaceId] = useState('')
   const [sessionId, setSessionId] = useState('')
+  const [taskId, setTaskId] = useState('')
   const [copied, setCopied] = useState(false)
   const headingId = useId()
   const draft = policy.draft
@@ -308,8 +309,12 @@ export function ThalirisPage(props: Props) {
         ) : null}
         </fieldset>
 
-        {tab === 'diagnostics' ? <Diagnostics native={native} selectedSession={sessionId} setSelectedSession={setSessionId}
-          copied={copied} setCopied={setCopied} t={tfn} loadDiagnostics={() => sessionId && props.loadDiagnostics(sessionId)}
+        {tab === 'diagnostics' ? <Diagnostics native={native} selectedSession={sessionId} setSelectedSession={value => {
+          setSessionId(value)
+          setTaskId('')
+        }}
+          selectedTask={taskId} setSelectedTask={setTaskId}
+          copied={copied} setCopied={setCopied} t={tfn} loadDiagnostics={() => sessionId && taskId && props.loadDiagnostics(sessionId, taskId)}
           openSession={props.openSession} approveMemory={props.approveMemory} /> : null}
       </SettingsForm>
     </div>
@@ -385,16 +390,18 @@ function MemoryFields({ draft, native, t, editMemory, openPlugin, editRole }: {
   </section>
 }
 
-function Diagnostics({ native, selectedSession, setSelectedSession, copied, setCopied, t, loadDiagnostics, openSession, approveMemory }: {
+function Diagnostics({ native, selectedSession, setSelectedSession, selectedTask, setSelectedTask, copied, setCopied, t, loadDiagnostics, openSession, approveMemory }: {
   native: NativeProjectionState; selectedSession: string; setSelectedSession: (value: string) => void;
+  selectedTask: string; setSelectedTask: (value: string) => void;
   copied: boolean; setCopied: (value: boolean) => void; t: (key: LocaleKey) => string;
-  loadDiagnostics: () => void; openSession: (sessionId: string) => void; approveMemory: (sessionId: string, proposalId: string) => void
+  loadDiagnostics: () => void; openSession: (sessionId: string) => void; approveMemory: (sessionId: string, taskId: string, proposalId: string) => void
 }) {
   const roots = native.sessions.ids.map(id => native.sessions.byId[id])
     .filter(row => row && row.parentId === undefined && row.origin !== 'subagent')
   const data = record(native.diagnostics)
   const task = record(data?.task)
   const taskState = record(task?.state)
+  const taskMatches = taskState?.task_id === selectedTask
   const pendingResults = (taskState?.pending_results ?? []).flatMap((item: unknown) => {
     try { return [typeof item === 'string' ? JSON.parse(item) : item] } catch { return [] }
   }).map(record).filter((item: Record<string, any> | undefined) => item) as Record<string, any>[]
@@ -407,12 +414,14 @@ function Diagnostics({ native, selectedSession, setSelectedSession, copied, setC
     <h3>{t('diagnosticsTitle')}</h3><p>{t('diagnosticsHelp')}</p>
     <div className={css.inline}><select value={selectedSession} onChange={event => setSelectedSession(event.currentTarget.value)}>
       <option value="">{t('selectSession')}</option>{roots.map(row => <option key={row.id} value={row.id}>{row.displayTitle} — {row.id}</option>)}
-    </select><Button disabled={!selectedSession || native.diagnosticStatus === 'loading'} onClick={loadDiagnostics}>
+    </select><Input aria-label={t('selectTaskId')} placeholder={t('selectTaskId')} value={selectedTask} onChange={event => setSelectedTask(event.currentTarget.value)} />
+    <Button disabled={!selectedSession || !selectedTask.trim() || native.diagnosticStatus === 'loading'} onClick={loadDiagnostics}>
       {native.diagnosticStatus === 'loading' ? t('diagnosticsLoading') : native.diagnosticStatus === 'ready' ? t('refreshDiagnostics') : t('loadDiagnostics')}
     </Button></div>
     {roots.length === 0 ? <p>{t('noRootSessions')}</p> : null}
     {native.diagnosticStatus === 'error' ? <p className={css.error}>{native.diagnosticError ?? t('diagnosticsUnavailable')}</p> : null}
-    {data ? <>
+    {data && !taskMatches ? <p className={css.notice}>{t('diagnosticsTaskChanged')}: {String(taskState?.task_id ?? '')}</p> : null}
+    {data && taskMatches ? <>
       <div className={css.grid}>
         <InfoCard title={t('taskEvidence')} value={task} />
         <InfoCard title={t('workspaceEvidence')} value={data.workspace} />
@@ -453,7 +462,7 @@ function Diagnostics({ native, selectedSession, setSelectedSession, copied, setC
           <p>{t('proposalText')}</p><pre>{String(proposal.text ?? '')}</pre>
           <p>{t('proposalProvenance')}: {json(proposal.provenance)}</p>
           {approved.has(proposal.proposal_id) ? <p>{t('alreadyApproved')}</p> : canApprove ?
-            <Button variant="primary" disabled={native.approvalStatus === 'saving'} onClick={() => approveMemory(selectedSession, proposal.proposal_id)}>{t('approveProposal')}</Button> :
+            <Button variant="primary" disabled={!taskMatches || native.approvalStatus === 'saving'} onClick={() => approveMemory(selectedSession, selectedTask, proposal.proposal_id)}>{t('approveProposal')}</Button> :
             <p className={css.notice}>{t('noApprovalGrant')}</p>}
         </article>
       })}

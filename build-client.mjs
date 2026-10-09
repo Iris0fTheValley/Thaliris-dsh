@@ -1,5 +1,6 @@
-import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -49,7 +50,13 @@ try {
   const nodeModules = join(temporary, 'node_modules')
   const upstreamNodeModules = join(workspace, 'ui-settings-subagent', 'node_modules')
   if (!existsSync(upstreamNodeModules)) throw new Error('Pinned DSH client dependencies are not installed.')
-  symlinkSync(upstreamNodeModules, nodeModules, 'junction')
+  mkdirSync(nodeModules)
+  for (const entry of readdirSync(upstreamNodeModules)) {
+    symlinkSync(join(upstreamNodeModules, entry), join(nodeModules, entry), 'junction')
+  }
+  const requireDomain = createRequire(resolve(source, 'packages/storage/storage-domain/package.json'))
+  const zodDirectory = dirname(requireDomain.resolve('zod'))
+  symlinkSync(zodDirectory, join(nodeModules, 'zod'), 'junction')
 
   const tsdown = join(source, 'node_modules', 'tsdown', 'dist', 'run.mjs')
   if (!existsSync(tsdown)) throw new Error('Pinned DSH client build dependencies are not installed.')
