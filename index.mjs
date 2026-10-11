@@ -194,7 +194,7 @@ export function apply(ctx, config) {
       return value
     } finally { if (run) { if (run.localAgent) childGrants.delete(run.localAgent); await run.dispose(); runs.delete(run) } }
   })
-  register(TOOL_NAMES[3], 'Controller decides semantic acceptance. Unresolved work blocks close.', object({ ...identitySchema, decision: string }),
+  register(TOOL_NAMES[3], 'Controller records mechanical closure from the explicit closing handoff acceptance result. Unresolved work blocks close.', object({ ...identitySchema, decision: string }),
     (args, agent, signal) => bridge(agent, 'close', args, signal))
 
   async function nativeObservation(agent, reservation, signal, cancel) {

@@ -192,7 +192,7 @@ async function closedLoop() {
       const system = systemText(request)
       assert.equal(occurrences(system, 'Thaliris Controller contract:'), 1, 'root receives the semantic contract exactly once per model request')
       assert.match(system, /Thaliris records selected intent and mechanical observations, not semantic acceptance\./, 'actual root model input states semantic ownership')
-      assert.match(system, /Own task direction, scope, hard invariants, acceptance, context selection and next routing; implementation methods belong to executor\./, 'actual root model input leaves task routing with the Controller')
+      assert.match(system, /Own task direction, scope, hard invariants, acceptance criteria, context selection and next routing; implementation methods belong to executor\./, 'actual root model input leaves task routing with the Controller')
       assert.match(system, /Send a decision-complete bounded handoff:/, 'actual root model input requires a selected bounded handoff')
       assert.equal(occurrences(system, 'stable narrative base language'), 1, 'precision representation has one Controller owner')
       assert.match(system, /accepted contract uniquely determines/, 'deterministic rerouting preserves accepted behavior')
