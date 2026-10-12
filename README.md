@@ -81,7 +81,7 @@ Fresh Child 是新的原生角色会话，通过选择性 Handoff 接收完成�
 
 结论应带有证据来源及其适用范围。文件 hash、Git blob 和 test/runtime observation 可以说明观察了哪个版本；freshness 只核对声明过的来源是否变化，不能证明所有依赖都未改变，也不能替模型判断结论是否仍然适用。证据不足的结论保留为 `UNVERIFIED`；缺少执行或身份观察时保留 `UNKNOWN`，不将推测升级为确认。已有记录只是可检索材料，不是下游必须接受的事实。
 
-短期任务记录保存当前 Task ID 的事实、待处理工作和证据，不复制对话 transcript。Core 的 `task_promote` 可通过 Task revision CAS，在 `.agent-memory/` 中新增或更新有界的非 `INDEX.md` Markdown 文档，并可选附带最多 64 个来源引用。`.agent-memory/INDEX.md` 与 `.milestones/INDEX.md` 通过单独的 CAS 操作进行经过链接校验的完整内容更新；这不会推广 `.milestones/` 下的其他文档。此类文件写入不分配类型，也不保证内容为 `CONFIRMED`；旧文档的 `status` frontmatter 保持不透明，新内容渲染时忽略它。其余 `.milestones/` 文档由项目维护者手动维护。Controller 判断哪些信息值得长期保留，哪些只对当前任务有用；持久化与向下一角色传递是两个独立选择。Host 的可选记忆集成另有自己的存储与授权契约。
+短期任务记录保存当前 Task ID 的事实、待处理工作和证据，不复制对话 transcript。Core 的 `task_promote` 通过 Task revision CAS，在 `.agent-memory/` 中新增有界的非 `INDEX.md` Markdown 文档，拒绝覆盖已有目标，并可选附带最多 64 个来源引用。同一 promotion 输入可选附带 `index_update`，对 `.agent-memory/` 或 `.milestones/` 中已有的 `INDEX.md` 进行文件 digest CAS、链接校验和完整内容替换；这不会推广其他 milestone 文档。新文档自动生成 `Evidence` 和 `Revision: 1` frontmatter，存在来源描述时附加 `Durable Source Descriptors`；不自动生成类型、`Status` 或确认结论。兼容输入中的 `status` 不参与新文档渲染。已有记忆和其他 milestone 文档可由项目维护者另行维护。Controller 判断哪些信息值得长期保留，哪些只对当前任务有用；持久化与向下一角色传递是两个独立选择。Host 的可选记忆集成另有自己的存储与授权契约。
 
 每个独立任务都有以 UUID 标识的 Task ID 和自己的本地状态文件。继续已有任务时明确选择 Task ID 与相关证据；开始新任务时创建新的 Task ID，不从旧工作区状态推断当前任务。旧 `ACTIVE`、`UNKNOWN` 或损坏记录不会自动占住唯一任务槽位，但真实的共享文件重叠写入仍需协调。原生会话关联、恢复和权限检查属于 adapter；Task ID 本身不授予权限，也不构成 Host 身份认证。
 
