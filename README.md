@@ -81,11 +81,11 @@ Fresh Child 是新的原生角色会话，通过选择性 Handoff 接收完成�
 
 结论应带有证据来源及其适用范围。文件 hash、Git blob 和 test/runtime observation 可以说明观察了哪个版本；freshness 只核对声明过的来源是否变化，不能证明所有依赖都未改变，也不能替模型判断结论是否仍然适用。证据不足的结论保留为 `UNVERIFIED`；缺少执行或身份观察时保留 `UNKNOWN`，不将推测升级为确认。已有记录只是可检索材料，不是下游必须接受的事实。
 
-短期任务记录保存当前 Task ID 的事实、待处理工作和证据，不复制对话 transcript。在 Core 项目记录中，`.agent-memory/` 保存经选择、可跨任务复用的知识，`.milestones/` 保存持续项目的进度与验证。Controller 判断哪些信息值得长期保留，哪些只对当前任务有用；持久化与向下一角色传递是两个独立选择。Host 的可选记忆集成另有自己的存储与授权契约。
+短期任务记录保存当前 Task ID 的事实、待处理工作和证据，不复制对话 transcript。Core 的 `task_promote` 可通过 Task revision CAS，在 `.agent-memory/` 中新增或更新有界的非 `INDEX.md` Markdown 文档，并可选附带最多 64 个来源引用。`.agent-memory/INDEX.md` 与 `.milestones/INDEX.md` 通过单独的 CAS 操作进行经过链接校验的完整内容更新；这不会推广 `.milestones/` 下的其他文档。此类文件写入不分配类型，也不保证内容为 `CONFIRMED`；旧文档的 `status` frontmatter 保持不透明，新内容渲染时忽略它。其余 `.milestones/` 文档由项目维护者手动维护。Controller 判断哪些信息值得长期保留，哪些只对当前任务有用；持久化与向下一角色传递是两个独立选择。Host 的可选记忆集成另有自己的存储与授权契约。
 
 每个独立任务都有以 UUID 标识的 Task ID 和自己的本地状态文件。继续已有任务时明确选择 Task ID 与相关证据；开始新任务时创建新的 Task ID，不从旧工作区状态推断当前任务。旧 `ACTIVE`、`UNKNOWN` 或损坏记录不会自动占住唯一任务槽位，但真实的共享文件重叠写入仍需协调。原生会话关联、恢复和权限检查属于 adapter；Task ID 本身不授予权限，也不构成 Host 身份认证。
 
-最终产品验收通过一份独立、明确的 closing handoff，交给适当的现有执行角色：它按用户原始目标和标准检查候选，返回结论、对应证据与 `UNKNOWN`。Controller 整合该结果，对未满足标准或改变决策的未知项继续路由，并记录机械关闭；Controller 不自行完成最终验收。Reviewer 仍负责独立挑战，其 READY 不替代这份验收。人选 single-agent 或 controller-direct 时保持原模式，由已授权且可用的执行角色或人类提供验收；没有独立 closing 证据时明确验收未验证，交还人类作关闭决定。测试 `PASS` 只证明所运行检查的结果，子代理结束只证明执行终止，干净的 diff 也不证明产品行为符合要求。每个必要依赖由一个观察 owner 负责；已经得到可靠结果就使用它，不重复等待完成或因状态未变化而反复唤醒模型。验证与等待服务于尚未解决的实际问题。
+执行者完成并验证所分配的工作，向 Controller 报告对应标准的证据、限制和 `UNKNOWN`。Controller 根据原始目标、验收标准和现有证据判断产品是否完成，按需路由未达成标准或会改变判断的未知项，并在完成时记录机械关闭。独立 Reviewer 挑战仅在可能影响决定时进行。测试 `PASS`、Reviewer `READY`、原生 child `Completed` 和 task `DONE` 分别描述各自的结果；任何一项单独都不能证明产品完成。每个必要依赖由一个观察 owner 负责，并依据现有证据判断进一步验证或等待是否会改变结论。
 
 ## 一个跨模块编码场景
 
@@ -95,7 +95,7 @@ Fresh Child 是新的原生角色会话，通过选择性 Handoff 接收完成�
 2. Controller 选择相关事实、硬不变量和未知项形成 Handoff。若取消、完成与写入互相耦合，Fresh Focused Implementer 围绕这些不变量实现并验证；方向稳定的独立修改可以交给普通 Implementer。
 3. 实现者返回具体候选、来源版本、测试覆盖和未覆盖情形。核心语义收敛后，剩余确定性同步、回归或 Git 收尾可交给新的普通 Implementer，而不延长原聚焦上下文。
 4. 如果独立挑战会影响验收，Fresh Reviewer 检查诸如「取消与完成同时发生」及旧 API 兼容等边界。未验证的运行时行为继续标记未知；审查发现带着依据返回，而不是自动视为结论。
-5. 适当的现有执行角色通过明确的 closing handoff，按原始需求验收候选。Controller 整合其结论、证据和未知项，必要时继续路由，并记录机械关闭。只有跨任务仍有价值的取消不变量或已验证 failure mode 才进入项目记忆；其余记录留在对应 Task ID 中。
+5. Controller 使用执行者的证据和可选审查，按原始需求与标准评估候选。未满足标准或会改变决定的未知项继续进入后续工作；条件满足时，Controller 记录机械关闭。只有跨任务仍有价值的取消不变量或已验证 failure mode 才进入项目记忆；其余记录留在对应 Task ID 中。
 
 源码、Git、测试、编译器和实际运行时行为仍然是正确性的依据。Thaliris 复用 Codex、DSH 的原生会话、Agent 与执行能力：它补充上下文选择、交接、记录与证据边界，不另造一套 Agent Runtime。
 
@@ -127,7 +127,7 @@ Role records、prompt、tool allowlist、model route、memory grant 和 context 
 
 ## 行为与边界
 
-原生 root Agent、持久 Session ancestry 和配置的 native Workspace 必须与对应 Task ID 的 Core Authority anchor 相符。同一原生 root Session 可以关联多个独立 Core task；task-specific workstream、close、reconcile、inspect 和诊断读取都选择明确的 Task ID。仅有相同仓库路径或 Workspace 不会自动接续旧任务。委派会启动新的原生 child，只传递选定的有界 handoff、完整 role prompt 和明确选择的 memory context。closing handoff 明确提供最终验收结果；child 返回结果后，该 task 仍保持 active，直至 Controller 整合并记录 close。
+原生 root Agent、持久 Session ancestry 和配置的 native Workspace 必须与对应 Task ID 的 Core Authority anchor 相符。同一原生 root Session 可以关联多个独立 Core task；task-specific workstream、close、reconcile、inspect 和诊断读取都选择明确的 Task ID。仅有相同仓库路径或 Workspace 不会自动接续旧任务。委派会启动新的原生 child，只传递选定的有界 handoff、完整 role prompt 和明确选择的 memory context。Controller 按原始目标、验收标准和现有证据判断产品完成，再请求 task close；`thaliris_task_close` 执行 Core 的状态、revision 与可选 expected ID 检查后设置机械状态 `DONE`，不会自行核验验收目标。child `Completed` 和 task `DONE` 都不能单独证明产品完成。
 
 恢复依赖精确的原生 child correlation 和持久 terminal Session evidence。仅在 catalog 中可见或暂时不活跃不能证明 child 已结束。若身份、持久记录或 terminal reason 缺失，结果保持 UNKNOWN，对应 reservation 保留在该 Task ID 下，并阻止同一任务的替换工作或关闭，直至取得足够的终态证据。该 reservation 不会把另一 Task ID 的状态变成冲突证据；DSH 尚未实现更广泛的原生 UNKNOWN abandonment 路径。共享 OS 访问与 writer lease 是治理事实，不构成普遍的 actor 身份认证。
 
@@ -154,8 +154,8 @@ Core 仓库包含 [ABCD 基准协议](https://github.com/Iris0fTheValley/Thaliri
 
 DSH 使用原生持久化的 Workspace/Session/Agent 及 subagent 关联信息、显式的 Python Core bridge，以及由用户编辑的 Controller/role 策略。`policy.mjs` 管理 Controller 模板；`role-templates.mjs` 管理初始角色提示词。模型路由、工具 allowlist、memory/context 授权和启用记录仍属于用户策略。模板变更不会静默覆盖已有存储角色；显式空数组也会保持为空。`build-bundle.mjs` 根据这些模板生成默认禁用的 bundle patch。Client 输出来自 `client/*`。该适配器不会安装 Codex hooks、TOML profiles 或 Codex lifecycle 契约。本地未跟踪的 Codex 指令副本不构成 DSH 的权威来源。
 
-Controller 负责方向、范围、验收标准和后续路由；执行角色负责实现方法。普通 Implementer 收敛已接受的稳定方向。Focused Implementer 负责推理、实现、运行时反馈和修订，直到核心语义收敛；剩余确定性收尾交给新的普通 Implementer。Reviewer 独立且只读：READY 需要关键验收的支持证据，不能仅凭没有阻塞项来判定。见[共享语义](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)和[上下文设计](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md)。
-原生完成状态属于证据，不等于语义验收。Core 授权和 DSH 恢复继续使用现有的精确身份与证据检查。见 [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md)。本次模板规范化没有压缩基准测试或运行中 profile 激活方面的结论。
+Controller 负责方向、范围、验收标准和后续路由；执行角色负责实现、验证并报告证据。普通 Implementer 收敛已接受的稳定方向。Focused Implementer 负责推理、实现、运行时反馈和修订，直到核心语义收敛；剩余确定性收尾交给新的普通 Implementer。独立只读 Reviewer 可用于挑战证据；`READY` 需要对选定审查范围有支持证据，不能只凭没有阻塞项；它仍是审查结果，由 Controller 判断产品是否完成。见[共享语义](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)和[上下文设计](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md)。
+原生 child `Completed`、测试 `PASS`、Reviewer `READY` 和 task `DONE` 都是证据或机械状态，不能单独替代产品验收。Core 授权和 DSH 恢复继续使用现有的精确身份与证据检查。见 [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md)。本次模板规范化没有压缩基准测试或运行中 profile 激活方面的结论。
 
 ## 历史基准证据
 

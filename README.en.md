@@ -84,11 +84,11 @@ Roles are capabilities selected by work shape, not stages every task must traver
 
 Conclusions should identify their evidence and applicability. File hashes, Git blobs and test/runtime observations can identify the version observed. Freshness checks only declared sources for change; they cannot prove every dependency unchanged or decide whether a conclusion still applies. Insufficiently established conclusions remain `UNVERIFIED`; missing execution or identity observations remain `UNKNOWN`, rather than turning inference into confirmation. Existing records are retrievable material, not facts downstream roles must accept.
 
-Short-term records retain facts, pending work and evidence for the current Task ID rather than copying conversation transcripts. In Core project records, `.agent-memory/` holds selected knowledge reusable across tasks and `.milestones/` holds continuing project progress and verification. The Controller decides what merits long-term retention and what matters only to this task. Persistence and transmission to the next role are separate choices. Optional Host memory integrations have their own storage and authorization contracts.
+Short-term records retain facts, pending work and evidence for the current Task ID rather than copying conversation transcripts. Core `task_promote` can add or update a bounded non-`INDEX.md` Markdown document under `.agent-memory/` with task-revision CAS and up to 64 optional source references. `.agent-memory/INDEX.md` and `.milestones/INDEX.md` use a separate CAS operation that validates links and replaces the full content; this does not promote other `.milestones/` documents. These writes do not assign content types or guarantee a `CONFIRMED` status. Legacy `status` frontmatter stays opaque and is ignored when new content is rendered. Other `.milestones/` documents are maintained manually by the project. The Controller decides what merits long-term retention and what matters only to this task. Persistence and transmission to the next role are separate choices. Optional Host memory integrations have their own storage and authorization contracts.
 
 Each independent task has a UUID Task ID and its own local state file. Continuing a task means selecting its Task ID and relevant evidence; starting another creates a new Task ID rather than inferring the current task from old workspace state. Old `ACTIVE`, `UNKNOWN` or damaged records do not automatically occupy a singleton task slot. Actual overlapping writes to shared files still need coordination. Native session association, recovery and permission checks belong to adapters; a Task ID grants no authority and does not authenticate a Host actor.
 
-Final product acceptance uses a separate explicit closing handoff to a suitable existing executor, which checks the user's original objective and criteria and returns a conclusion, criterion-linked evidence and `UNKNOWN`. Controller integrates that result, routes unmet criteria or decision-changing unknowns, and records mechanical closure; it does not perform final acceptance itself. Reviewer remains an independent challenge, and its READY cannot replace this acceptance. Human-selected single-agent or controller-direct execution stays in that mode: use an already authorized available executor or human acceptance; without independent closing evidence, report acceptance unverified and return the closing decision to the human. A test `PASS` establishes the result of the checks run; child completion establishes execution termination; a clean diff does not establish the requested product behavior. Each necessary dependency has one observation owner. Use reliable results once available, without waiting for the same completion again or repeatedly waking a model to observe unchanged state. Verification and waiting serve actual unresolved questions.
+Executors implement and verify assigned work, then report criterion-linked evidence, limits and `UNKNOWN` to Controller. Controller judges product completion against the original objective and acceptance criteria using available evidence, routes unmet criteria or decision-changing unknowns as needed, and records mechanical closure when ready. An independent Reviewer challenge is optional and used when it could change a decision. Test `PASS`, Reviewer `READY`, native child `Completed` and task `DONE` describe separate outcomes; none alone establishes product completion. Assign one observation owner to each necessary dependency and use available evidence to decide whether further verification or waiting could change the result.
 
 ## A cross-module coding example
 
@@ -98,7 +98,7 @@ Suppose a user requests cancellation for an export feature spanning an API, queu
 2. The Controller selects relevant facts, hard invariants and unknowns for the Handoff. Where cancellation, completion and writes are coupled, a Fresh Focused Implementer implements and verifies those invariants. Independent changes with stable direction can go to an ordinary Implementer.
 3. The executor returns the exact candidate, source versions, test coverage and uncovered cases. After core semantic convergence, a fresh ordinary Implementer can handle remaining deterministic synchronization, regression or Git closure without extending the original focused context.
 4. Where independent challenge could affect acceptance, a Fresh Reviewer examines boundaries such as simultaneous cancellation and completion or older API compatibility. Unverified runtime behavior remains unknown; findings return with evidence rather than becoming accepted conclusions automatically.
-5. A suitable existing executor receives an explicit closing handoff and verifies the candidate against the original request. Controller integrates its conclusion, evidence and unknowns, routes further work when needed and records mechanical closure. Only cancellation invariants or verified failure modes with value beyond this task enter project memory; other records remain with their Task ID.
+5. The Controller assesses the candidate against the original request and criteria using executor evidence and any optional review. It routes unmet criteria or decision-changing unknowns for further work, and records mechanical closure when the candidate is complete. Only cancellation invariants or verified failure modes with value beyond this task enter project memory; other records remain with their Task ID.
 
 Source code, Git, tests, compilers and actual runtime behavior remain the basis for correctness. Thaliris reuses native sessions, Agents and execution in Codex and DSH, adding context selection, handoffs, records and evidence boundaries rather than constructing another Agent Runtime.
 
@@ -128,7 +128,7 @@ Build the profile patch with npm run build:bundle and the client with DSH_SOURCE
 
 ## Behavior and limits
 
-The native root Agent, persisted Session ancestry, and configured native Workspace must match the Core Authority anchor for the selected Task ID. One native root Session may be associated with multiple independent Core tasks; task-specific workstream, close, reconcile, inspect and diagnostic reads select an explicit Task ID. A matching repository path or Workspace alone does not resume an older task. Delegation creates a fresh native child and passes only the selected bounded handoff, exact role prompt, and explicitly selected memory context. Final acceptance comes from an explicit closing handoff; a child result leaves that task active until Controller records close.
+The native root Agent, persisted Session ancestry, and configured native Workspace must match the Core Authority anchor for the selected Task ID. One native root Session may be associated with multiple independent Core tasks; task-specific workstream, close, reconcile, inspect and diagnostic reads select an explicit Task ID. A matching repository path or Workspace alone does not resume an older task. Delegation creates a fresh native child and passes only the selected bounded handoff, exact role prompt, and explicitly selected memory context. Controller judges product completion against the original objective and criteria using available evidence before requesting task close. `thaliris_task_close` performs Core task-state, revision and optional expected-ID checks, then sets the mechanical state `DONE`; it does not evaluate a verification target. Child `Completed` and task `DONE` each describe their own outcome and do not establish product completion alone.
 
 Recovery uses exact native child correlation and durable terminal Session evidence. Catalog membership or inactivity alone does not prove completion. If identity, persistence, or terminal reason is missing, the result remains UNKNOWN and its reservation stays attached to that Task ID, blocking replacement work or close for that same task until sufficient terminal evidence is available. That reservation does not make another Task ID's state conflicting. DSH does not yet provide the broader native UNKNOWN-abandonment flow. Shared OS access and writer leases are governance facts, not universal actor authentication.
 
@@ -162,14 +162,17 @@ comes from `client/*`. This adapter does not install Codex hooks, TOML profiles 
 lifecycle contract. The untracked local Codex instruction copies are not DSH authority.
 
 Controller owns direction, scope, acceptance criteria and next routing; executor owns implementation
-methods. Ordinary Implementer converges the stable accepted direction. Focused Implementer
-owns reasoning, implementation, runtime feedback and revision until core semantics converge;
-remaining deterministic closure goes to a fresh ordinary Implementer. Reviewer is independent
-and non-writing: supported critical evidence is needed for READY, not absence of blockers.
+and verification of assigned work and reports evidence. Ordinary Implementer converges the stable
+accepted direction. Focused Implementer owns reasoning, implementation, runtime feedback and revision
+until core semantics converge; remaining deterministic closure goes to a fresh ordinary Implementer.
+An independent, non-writing Reviewer may challenge evidence when useful; READY requires supported
+evidence for the selected review scope, not mere absence of blockers. It remains a review result,
+and Controller judges product completion.
 See [shared semantics](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)
 and [context design](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md).
-Native completion is evidence, not semantic acceptance. Core authority and DSH recovery retain
-their existing exact identity/evidence checks. See [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md).
+Native child Completed, test PASS, Reviewer READY and task DONE are evidence or mechanical state,
+not product completion by themselves. Core authority and DSH recovery retain their existing exact
+identity/evidence checks. See [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md).
 No compression benchmark or live-profile activation is claimed for template normalization.
 
 ## Historical benchmark evidence
