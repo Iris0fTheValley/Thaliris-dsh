@@ -1,180 +1,177 @@
-# Thaliris for DeepSeek Harness
+# Thaliris
 
-Language: English | [简体中文](README.md)
+[简体中文](README.md)
 
-A lightweight, Git-native context and orchestration layer for AI coding workflows.
+**Attention is the most expensive resource.**
 
-Thaliris selects necessary facts, constraints and evidence to protect effective reasoning by high-capability models in focused contexts. Context quality is not context quantity; runtime prompts are part of the working context too. Irrelevant information, competing objectives and accumulated history can dilute or interfere with the evidence that actually needs reasoning.
+Thaliris is a **cognitive orchestration layer** for AI coding agents. It does not shorten context; it addresses two problems in long tasks:
 
-**Attention is the most expensive resource.** Here, attention means a capable model's effective cognitive budget for solving difficult problems in a clean, focused context. It is neither simply the price of tokens nor the Attention algorithm.
+- A capable model's attention is diluted by noise. Exploration, debugging and logs should not stay in the reasoning path responsible for key judgments.
+- Original requirements and counterevidence can disappear during handoffs. A local “done” report must not silently overwrite an issue already found.
 
-Thaliris manages the conditions under which information enters a reasoning path rather than rebuilding a general-purpose Agent Framework. Evidence, freshness, memory, task state and adapter mechanisms serve correct information transfer and task execution, rather than adding process for its own sake. Cognitive isolation and appropriate allocation of model capabilities aim to improve complex-task quality and overall efficiency without sacrificing necessary reasoning or evidence.
+> **Protect the reasoning. Isolate the noise. Isolation without amnesia.**
 
-> **Status:** Beta. Design goals are not demonstrated gains. Historical ABCD results apply to their original setups; recent prompt, orchestration and waiting-rule changes have no new controlled quality or cost comparison.
+Thaliris builds on the native Agent capabilities of Hosts such as Codex and DeepSeek Harness, adding a layer for isolation, handoffs and evidence continuity rather than creating another Agent Runtime.
 
-## Why this project exists
+> **Status: Beta.** Real refactoring work has shown an implementer dispatching an investigation, a Controller starting an independent review, and counterevidence driving repairs. The sample is too small to establish a general quality or cost advantage. See [empirical observations](#empirical-observations).
 
-Long coding tasks tend to accumulate context.
+## Why this is not context management
 
-A single agent may eventually carry:
+Common approaches manage more context within one Agent through compaction, retrieval or memory. Thaliris sees a larger problem than token count: too many competing goals share one reasoning path. The same Agent may be expected to investigate, design, implement, debug, review its own work and remember earlier failures.
 
-* repository exploration;
-* failed search paths;
-* implementation details;
-* test output;
-* debugging traces;
-* architectural reasoning;
-* reviewer criteria;
-* old decisions;
-* unrelated historical context.
+Thaliris manages **who reasons and with what reasoning context**:
 
-More context is not automatically better context.
+> **Give each reasoning context the information it needs; do not include other information merely because it exists.**
 
-For strong reasoning models, the larger risk is often not the raw number of tokens but the number of competing objectives inside the same reasoning trajectory.
+The name combines Thalamus, which filters and routes information, and Iris, which regulates how much light reaches the eye.
 
-An agent asked to simultaneously:
+## Three pillars
 
-* investigate,
-* design,
-* implement,
-* verify,
-* review its own design,
-* remember previous failures,
-* and satisfy a large procedural checklist
+### 1. Cognitive isolation: focus capable models on the work that needs them
 
-is solving a different problem from an agent given a focused reasoning question with the necessary evidence.
+A long-lived **Controller** retains the user goal, hard constraints and acceptance criteria. Short-lived roles work in fresh contexts and return conclusions, sources, verification results and decision-changing unknowns rather than the full working trail.
 
-Thaliris is built around a simple idea:
+| Role | Responsibility |
+| --- | --- |
+| Investigator | Investigate facts within the selected scope |
+| Implementer | Implement an accepted direction and verify it |
+| Focused Implementer | Handle tightly coupled design and implementation until the core semantics converge |
+| Reviewer | Optionally challenge a candidate independently and read-only |
 
-> **Preserve useful information without forcing every role to carry every piece of information.**
+Roles are selected as needed, not used as a fixed pipeline. Single-Agent work, direct Controller execution and delegation are all valid. Different roles can use models with different capabilities, keeping stronger models at decision-critical points.
 
-The project therefore treats context boundaries as part of the engineering architecture.
+### 2. Evidence continuity: isolate without forgetting
 
----
+The main risk of isolation is that a counterexample found by a reviewer can disappear after several handoffs and repairs behind a simple “tests pass.” Thaliris addresses that risk with these rules:
 
-## Why Thaliris
+1. **Record counterevidence.** When a child discovers a fact that changes a local conclusion, local acceptance or critical unknown, record an observation with sources, handoff provenance and its associated user requirement.
+2. **Keep it visible until disposition.** Relevant observations remain visible in later handoffs until the Controller explicitly judges each related requirement satisfied, unknown, needing repair, or no longer relevant with a reason.
+3. **Good news does not erase bad news.** A later test PASS, Reviewer READY, child Completed or Core DONE does not retire an earlier repair or unknown basis. The Controller must explicitly respond to it.
+4. **Present evidence before the next decision.** The Adapter returns still-unresolved evidence with the child result before the Controller's next broad completion decision. This needs no extra Agent, fixed stage or polling.
+5. **Append history instead of rewriting it.** Earlier observations and judgments remain in the record without automatically becoming current facts.
 
-**Thaliris** combines **Thalamus** and **Iris**.
+Core stores these links and append-only history; it does not decide what matters. The Controller decides relevance and acceptance.
 
-The thalamus filters and routes information entering cognition; the iris
-regulates how much light reaches vision. The name is an image for agent
-context: control what reaches a reasoning path, preserve evidence-backed
-information, and isolate unrelated working sets.
+~~~text
+Reviewer finds a counterexample -> observation with source and requirement
+                    |
+      repair, test PASS, child Completed ... do not erase it
+                    |
+Controller disposition: satisfied / unknown / repair / no longer relevant
+~~~
 
----
+### 3. Semantics belong to the model; mechanics belong to Thaliris
 
-## How the principles shape work
+The mechanical layer handles identity, sources, versions, continuity and bounded retrieval; semantic judgments stay with the model. Conclusions carry sources such as file hashes, Git blobs or test observations. Freshness only says whether declared sources changed; it does not prove every dependency stayed unchanged. When evidence is insufficient, keep the state UNKNOWN rather than upgrading an inference to a confirmed fact.
 
-### Long-lived decisions, short-lived working contexts
+## Components
 
-The long-lived Controller retains the user objective, scope, hard invariants, acceptance conditions and selected decision basis, then decides what work is needed next. Short-lived roles carry the investigation or implementation working set. Search paths, debugging traces and raw logs stay in the responsible context; the return carries conclusions, source locations, verification, contradictions and unknowns that could change a decision. The Controller need not carry the entire process again, and executors need not carry the project's entire history.
+| Component | Responsibility |
+| --- | --- |
+| [Thaliris Core](https://github.com/Iris0fTheValley/Thaliris/blob/main/README.en.md) (shared Core) | Task IDs and task records, observation/judgment links, evidence and freshness, project memory, milestones, compare-and-swap writes and rollback |
+| [Thaliris-codex](https://github.com/Iris0fTheValley/Thaliris-codex/blob/main/README.md) | Native Codex integration: Fresh Children, role profiles, identity and lifecycle, and evidence re-presentation |
+| [Thaliris-dsh](https://github.com/Iris0fTheValley/Thaliris-dsh/blob/main/README.md) | DeepSeek Harness plugin: Workspace/Session/Agent integration and optional Memory |
 
-A Fresh Child is a new native role session receiving the facts, constraints, sources and acceptance needed for its work through a selective Handoff. Isolating history does not discard evidence: necessary originals can be reopened at their source locations, while established inventories and facts should be reused. A working set is not a handoff set. Recording or retaining information does not automatically pass it to every role.
+There is one shared Core. Core does not run models, schedule Agents or authenticate callers; native execution belongs to each Adapter.
 
-| Role | Work it handles | Why separate it |
-| --- | --- | --- |
-| Investigator | Facts within the selected scope, exact sources, coverage, contradictions and unknowns | Keeps exploration history in the investigation context without deciding architecture for the Controller |
-| Implementer | An accepted, stable direction through necessary verification, local repair and assigned closure | Lets deterministic work reuse an explicit contract without reopening architectural decisions |
-| Focused Implementer | Sustained reasoning, implementation, runtime feedback and revision across coupled invariants until core semantics converge | Protects focused cognitive budget while the solution can still change; a fresh ordinary Implementer then handles assigned deterministic closure |
-| Reviewer | Independent, non-writing challenge of original acceptance, invariants and cross-boundary behavior after candidate convergence | Examines evidence without carrying the implementer's full debugging trajectory or continuing its code changes |
+## Empirical observations
 
-Roles are capabilities selected by work shape, not stages every task must traverse. Multiple Agents, fixed review rounds and uniform steps are not mandatory; an explicit single-agent execution choice should also be preserved. Investigation, independent review and parallelism depend on evidence, decision coupling and actual write conflicts rather than file, call or elapsed-time thresholds. Native role bindings and execution modes belong to each Host adapter.
+**What this benchmark measures:** We chose a difficult single-turn refactor: desktop and WebUI share Live2D behavior, with model selection, voice/action queues and exit lifecycle involved. The goal is not to fix every bug in one turn. It is to observe whether original requirements keep influencing decisions through investigation, implementation, handoffs, review and repair.
 
-### Evidence, task records and reusable knowledge
+**How to read the results:** Each frozen candidate received an independent, strict product post-review that continued looking for counterexamples. Every row therefore has residual defects, many of which existed in the starting code. Compare whether severe P1 gaps were contained and whether the collaboration behavior actually occurred.
 
-Conclusions should identify their evidence and applicability. File hashes, Git blobs and test/runtime observations can identify the version observed. Freshness checks only declared sources for change; they cannot prove every dependency unchanged or decide whether a conclusion still applies. Insufficiently established conclusions remain `UNVERIFIED`; missing execution or identity observations remain `UNKNOWN`, rather than turning inference into confirmation. Existing records are retrievable material, not facts downstream roles must accept.
+| Sample | Execution | Independent review drove repair | Residual P1 after review (original requirement gaps) | P2 | Runtime | API-equivalent cost |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| C · 10/14 | Luna multi-agent | Yes, local | 2 | 3 | 57.1 min | $0.46 |
+| D · 10/14 | Sol + Luna multi-agent | Yes | 1 | 2 | 40.4 min | $2.62 |
+| C · 10/19 | Luna (dispatch rejected; single-agent fallback) | No | 3 | 3 | 19.8 min | $0.22 |
+| **D · 10/19** | **Sol + Luna native multi-agent** | **Yes, two counterexamples triggered repairs** | **0** | **3** | **34.4 min** | **$2.91** |
 
-Short-term records retain facts, pending work and evidence for the current Task ID rather than copying conversation transcripts. Core `task_promote` creates bounded non-`INDEX.md` Markdown documents under `.agent-memory/` with task-revision CAS and up to 64 optional source references; it refuses to overwrite existing targets. The same promotion input may include an optional `index_update` that replaces an existing `INDEX.md` under `.agent-memory/` or `.milestones/` after file-digest CAS and link validation; this does not promote other milestone documents. New documents generate `Evidence` and `Revision: 1` frontmatter and append `Durable Source Descriptors` when sources are described; they do not automatically generate types, `Status` or confirmation conclusions. A compatibility input's `status` is not rendered in new documents. Existing memory and other milestone documents can be maintained separately by the project. The Controller decides what merits long-term retention and what matters only to this task. Persistence and transmission to the next role are separate choices. Optional Host memory integrations have their own storage and authorization contracts.
+The October 14 and October 19 C/D rows are separate runs. The frozen A and B single-agent candidates each received an independent product post-review by GPT-6.1 Sol High; both reviews found concrete failure counterexamples. A and B were not assigned P1/P2 counts using the same criteria.
 
-Each independent task has a UUID Task ID and its own local state file. Continuing a task means selecting its Task ID and relevant evidence; starting another creates a new Task ID rather than inferring the current task from old workspace state. Old `ACTIVE`, `UNKNOWN` or damaged records do not automatically occupy a singleton task slot. Actual overlapping writes to shared files still need coordination. Native session association, recovery and permission checks belong to adapters; a Task ID grants no authority and does not authenticate a Host actor.
+API-equivalent costs are reference estimates for comparison, not actual billed amounts. The D · 10/19 external post-review found no P0 or P1 issue, but reported three P2 classes; this is not full product acceptance. A conflicting native Agent status during that run was handled as a Codex-native lifecycle anomaly.
 
-Executors implement and verify assigned work, then report criterion-linked evidence, limits and `UNKNOWN` to Controller. Controller judges product completion against the original objective and acceptance criteria using available evidence, routes unmet criteria or decision-changing unknowns as needed, and records mechanical closure when ready. An independent Reviewer challenge is optional and used when it could change a decision. Test `PASS`, Reviewer `READY`, native child `Completed` and task `DONE` describe separate outcomes; none alone establishes product completion. Assign one observation owner to each necessary dependency and use available evidence to decide whether further verification or waiting could change the result.
+**What happened in D · 10/19:**
 
-## A cross-module coding example
+~~~text
+Controller assigns coupled design and implementation to Sol
+  -> Sol independently dispatches Luna to investigate runtime support and test boundaries
+  -> Sol returns a local candidate
+  -> Controller starts an independent review instead of treating local completion as the end
+  -> Reviewer finds two counterexamples that overturn the local conclusion:
+       - an explicitly selected model can be replaced by an older desktop rule
+       - an exit farewell may be sent after its event channel has closed
+  -> Controller accepts the counterevidence and dispatches repairs and regression checks
+~~~
 
-Suppose a user requests cancellation for an export feature spanning an API, queue and storage layer while preserving older requests. This illustrates the mechanism, not a product test or performance experiment, and is not a mandatory workflow.
+This demonstrates the behavior Thaliris is designed to test: **local success is not global completion, and counterevidence changes the work that follows.**
 
-1. The Controller establishes cancellation semantics, compatibility boundaries and acceptance scenarios. An Investigator maps request entry, queue transitions and storage writes, returning sourced call relationships, existing tests and unresolved races. Failed searches and raw logs stay in its working set.
-2. The Controller selects relevant facts, hard invariants and unknowns for the Handoff. Where cancellation, completion and writes are coupled, a Fresh Focused Implementer implements and verifies those invariants. Independent changes with stable direction can go to an ordinary Implementer.
-3. The executor returns the exact candidate, source versions, test coverage and uncovered cases. After core semantic convergence, a fresh ordinary Implementer can handle remaining deterministic synchronization, regression or Git closure without extending the original focused context.
-4. Where independent challenge could affect acceptance, a Fresh Reviewer examines boundaries such as simultaneous cancellation and completion or older API compatibility. Unverified runtime behavior remains unknown; findings return with evidence rather than becoming accepted conclusions automatically.
-5. The Controller assesses the candidate against the original request and criteria using executor evidence and any optional review. It routes unmet criteria or decision-changing unknowns for further work, and records mechanical closure when the candidate is complete. Only cancellation invariants or verified failure modes with value beyond this task enter project memory; other records remain with their Task ID.
+**C · 10/19 also matters:** This was not a successful multi-agent run. Luna's request to pass the full conversation history to a child was correctly rejected by Fresh Context protection; it did not retry with an independent context, so the task returned to single-agent execution. This shows that isolation protection worked, while also showing that a critical dispatch decision needs a capable model.
 
-Source code, Git, tests, compilers and actual runtime behavior remain the basis for correctness. Thaliris reuses native sessions, Agents and execution in Codex and DSH, adding context selection, handoffs, records and evidence boundaries rather than constructing another Agent Runtime.
+**What is not yet established:** Each arm is a single run; Host and model effort differed between batches, so this is not a single-variable experiment. The mixed-model configuration cost more. Some counterevidence from D · 10/19 review and repair led to real fixes but was not recorded as formal observations, so the persistent Evidence Continuity path is still being completed. See the [ABCD benchmark implementation](https://github.com/Iris0fTheValley/Thaliris/tree/main/benchmarks/abcd) and [benchmark protocol](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-benchmark-protocol.md).
 
-## DSH runtime contracts and capabilities
+## Quick start
 
-@thaliris/dsh-plugin adds task records and explicit Controller tools to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), using its native Workspaces, persistent Sessions, Agents, subagents, Settings, model catalog, Plugin Manager, and lifecycle. The Python Core is a separate [Thaliris distribution](https://github.com/Iris0fTheValley/Thaliris); this repository contains no Core or Codex adapter copy.
+Python 3.11 or newer is required. Git is optional for Core use; installing from the Git URL below also requires Git.
 
-The runtime package has optional Remote API and shared Web/Desktop client entries. Its policy page edits native role, model, workspace, and memory settings. Memory capability and the default local provider are separate optional packages, while task routing and close work without them or the client UI. Contracts and limits are in [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md), [CAPABILITIES.md](CAPABILITIES.md), and [CORE-BASELINE.md](CORE-BASELINE.md).
+~~~bash
+uv tool install git+https://github.com/Iris0fTheValley/Thaliris
+cd your-repository
+thaliris-core --root . init
+TASK_ID=$(thaliris-core --root . task-start "example task" | python -c 'import json,sys; print(json.load(sys.stdin)["task_id"])')
+thaliris-core --root . --task-id "$TASK_ID" task-status
+~~~
 
-### Shared semantics and native policy
+Each task has its own Task ID, which is passed explicitly to later operations. Installing Core alone does not enable multi-agent work. For native integration, follow the [Codex](https://github.com/Iris0fTheValley/Thaliris-codex/blob/main/README.md) or [DSH](https://github.com/Iris0fTheValley/Thaliris-dsh/blob/main/README.md) guide.
 
-Thaliris is a Git-native context and agent orchestration controller, not a general identity system or standalone agent runtime. Its default is `delegated`: the long-lived Controller owns direction, scope, acceptance criteria and next routing; short-lived Investigators handle open-ended, cross-file, multi-step or repeated investigation, and Implementers handle work with a stable direction. Ordinary Controller reads, Git and diagnostics are legal within the task boundary; delegation follows purpose and working set, without numeric permission thresholds. An explicit user choice of `controller-direct` or `single-agent` takes precedence over the efficiency default while preserving task scope, readonly role boundaries and user-content protection.
+An initialized repository contains:
 
-These are shared work semantics, not proof of Host actor identity or an unbypassable tool guarantee. DSH uses user-editable native Controller/role policy. This README describes DSH capabilities only within the adapter contracts and verification limits below; it does not attribute Codex Hooks, Codex native lifecycle or Codex task-disposition features to DSH.
+~~~text
+.agent-memory/   # selected knowledge that can be reused across tasks
+.milestones/     # long-term scope, decisions, progress and verification
+.context/tasks/<task-id>/state.json   # task state and evidence; ignored by Git by default
+~~~
 
-## Install and configure
+Task state stores structured facts, observations and judgments, not conversation transcripts. Persistence and handoff are separate choices: recorded information is not automatically passed to every role.
 
-The package targets DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84 and Thaliris Core 0.4.4 source revision [`56e48ac299dd2c5c4b16c992db732a55b7790893`](https://github.com/Iris0fTheValley/Thaliris/tree/56e48ac299dd2c5c4b16c992db732a55b7790893). For this pin, the packed smoke builds and installs a local wheel from source; no published PyPI wheel is claimed. See [Core dependency provenance](CORE-BASELINE.md). It requires Node.js 22.19+ in the 22.x line or 24+, plus Python 3.11+. Core supplies thaliris.core and thaliris.authority to the plugin's configured Python environment. Runtime, Remote API, and optional memory entries are disabled by default. Install the local archives through the native Plugin Manager:
+## What it is not
 
-This guide and its links to shared semantics do not automatically port updated Codex-specific admission, Hook, wait, profile, or semantic-acceptance contracts to this DSH pin. This repository claims compatibility only for the listed revisions and the checks documented here.
+Thaliris is not an Agent Runtime, workflow engine, fixed multi-agent pipeline, vector database or RAG system, automatic whole-repository summarizer, or substitute for source code, tests, compilers and runtime behavior.
 
-    dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
+Removing Thaliris should not make the underlying development process incorrect.
 
-Before enabling runtime, configure absolute pythonExecutable, corePath, and authorityDirectory values. corePath identifies the Core installation for that Python environment. Keep authorityDirectory outside the governed Workspace and do not store credentials in plugin configuration. Register the canonical Git root as a native Workspace, create or resume its persistent root Session, then bind the native Workspace ID and exact root in policy.workspaces.
+## Further reading
 
-Build the profile patch with npm run build:bundle and the client with DSH_SOURCE=<checkout> npm run build:client from the pinned DSH checkout. The Web client preset is shared with Desktop. Run npm pack in this repository and each optional component directory to create the three archives. The patch is regenerated from visible role templates and leaves runtime/API disabled by default; bundled Zod licensing is listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The native policy form edits role records, prompts, tool grants, model routes, memory grants, and context permissions. Route modes are inherit, fixed, and allowed; Thaliris does not rank models or rewrite user settings.
+- [Core design](https://github.com/Iris0fTheValley/Thaliris/blob/main/DESIGN.md)
+- [Routing protocol](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)
+- [Task authority contract](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-task-authority.md)
+- [Prompt ownership and research motivation](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md)
+- [Role descriptions](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-role-packs.md) · [Packaging and API boundaries](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/host-neutral-packaging.md)
 
-## Behavior and limits
+## Native DSH integration
 
-The native root Agent, persisted Session ancestry, and configured native Workspace must match the Core Authority anchor for the selected Task ID. One native root Session may be associated with multiple independent Core tasks; task-specific workstream, close, reconcile, inspect and diagnostic reads select an explicit Task ID. A matching repository path or Workspace alone does not resume an older task. Delegation creates a fresh native child and passes only the selected bounded handoff, exact role prompt, and explicitly selected memory context. Controller judges product completion against the original objective and criteria using available evidence before requesting task close. `thaliris_task_close` performs Core task-state, revision and optional expected-ID checks, then sets the mechanical state `DONE`; it does not evaluate a verification target. Child `Completed` and task `DONE` each describe their own outcome and do not establish product completion alone.
+@thaliris/dsh-plugin adds Thaliris task records and Controller tools to DeepSeek Harness. It uses native DSH Workspaces, persistent Sessions, Agents/subagents, Settings, the model catalog, Plugin Manager and lifecycle. A Python bridge calls the separately installed Thaliris Core; this repository does not include copies of Core or the Codex Adapter.
 
-Recovery uses exact native child correlation and durable terminal Session evidence. Catalog membership or inactivity alone does not prove completion. If identity, persistence, or terminal reason is missing, the result remains UNKNOWN and its reservation stays attached to that Task ID, blocking replacement work or close for that same task until sufficient terminal evidence is available. That reservation does not make another Task ID's state conflicting. DSH does not yet provide the broader native UNKNOWN-abandonment flow. Shared OS access and writer leases are governance facts, not universal actor authentication.
+The DSH policy page configures role prompts, model routes, tools, Workspaces and Memory. Initial role templates use inherit routing and do not fix a model; route modes are inherit, fixed and allowed. Template changes do not overwrite saved user role records. An exact Workspace binding and persistent root Session are part of task association; a repository path alone does not resume an old task.
 
-Memory is disabled by default. The optional capability accepts replaceable async providers; @thaliris/dsh-memory-local adds a bounded text provider over native storage. There are no embeddings, vector/RAG system, credential manager, or automatic retrieval. Memory search/read are read-only and task-independent. Task inspection, diagnostics, approval and memory writes select an explicit Task ID. Manual and review writes pass through the bridge as Core proposals and use that task's Authority and CAS checks; automatic provider writes first verify the parent task association and require a separate persisted `autoAuthorized: true` opt-in. Removing either optional package leaves task routing and close available.
+Memory is an independent optional capability and is disabled by default. The memory capability and local text provider can be installed separately; task routing and close work without Memory or the client UI. There are no embeddings/vector RAG or automatic retrieval. Memory reads follow grants, and writes follow user policy and Core task checks. See [capabilities](CAPABILITIES.md) and the [client contract](CLIENT-CONTRACT.md).
 
-The extracted repository checks use a scripted LLM and pinned DSH source; they do not use online models or a current installed profile. The original source repository separately verified live Web integration against Core source revision 256f760, including a real task, fifth child, denial of native root tools to that child, and explicit DONE close. This does not mean the extracted package smoke launched a browser. Desktop shares the Web client bundle, but no Desktop binary was launched. The development section below and linked contracts describe the commands and verification scopes.
+## Installation and configuration
 
-The Core repository contains the [ABCD benchmark protocol](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-benchmark-protocol.md) and canonical results. The sibling [Thaliris Codex adapter](https://github.com/Iris0fTheValley/Thaliris-codex) uses the same Core.
+Building requires Node.js 22.19+ or 24+; running Core requires Python 3.11+. Build local archives from a compatible DSH/Core pair; the current pairing and version provenance are in [Core baseline](CORE-BASELINE.md). Build the bundle patch and shared Web/Desktop client, then pack the repository and each optional Memory component:
 
-## Development and verification
+~~~sh
+npm run build:bundle
+DSH_SOURCE=<pinned DSH checkout> npm run build:client
+npm pack
+~~~
 
-Use the pinned DSH source and Core source revision. Set DSH_SOURCE to the DSH checkout, THALIRIS_CORE_PATH to the directory containing the thaliris source package, and THALIRIS_TEST_PYTHON to an isolated Python 3.11+ environment. The source bridge and native composition checks use that checkout. For packed activation smoke, build a fresh local Core wheel from the pinned source, install it into the isolated environment, and set THALIRIS_TEST_CORE_PATH to the installed package directory. Then run:
+Install the main plugin archive through the DSH Plugin Manager. Add both optional archives only if Memory is needed:
 
-    npm run build:bundle
-    npm run build:client
-    npm run test:native
-    npm run test:client
-    python -m pytest tests/test_bridge.py -q
+~~~sh
+dsh plugin --profile <profile> add <path>/thaliris-dsh-plugin-0.2.0.tgz <path>/thaliris-dsh-memory-0.1.0.tgz <path>/thaliris-dsh-memory-local-0.1.0.tgz
+~~~
 
-The client build and tests use temporary package workspaces under DSH and remove them on exit; native tests use temporary fixture repositories. The packed smoke also needs THALIRIS_PACK_DIR (all three local archives), THALIRIS_TEST_CORE_PATH (the installed Core package), and THALIRIS_TEST_TMP_ROOT (task-owned scratch space), then runs npm run test:install. It verifies the packed runtime imports Core, starts, inspects, and closes a task through DSH, and retains those tools after optional memory bundles are removed.
+The generated bundle disables runtime/API by default. Before enabling it, configure absolute pythonExecutable, corePath and authorityDirectory values; corePath must point to Core installed in the same Python environment, and authorityDirectory must stay outside the governed Workspace. Then register the canonical Git root as a native DSH Workspace, create or resume its persistent root Session, and bind the exact Workspace ID and root in policy. Do not store credentials in plugin configuration.
 
-## Native policy and prompt boundaries
-
-DSH uses native persistent Workspace/Session/Agent and subagent correlation, an explicit
-Python Core bridge, and user-editable Controller/role policy. `policy.mjs` owns the
-Controller template; `role-templates.mjs` owns initial role prompts. Model routes, tool
-allowlists, memory/context grants and enabled records remain user policy. Existing stored
-roles are not silently overwritten by template changes; explicit empty arrays stay empty.
-`build-bundle.mjs` generates the disabled bundle patch from those templates. Client output
-comes from `client/*`. This adapter does not install Codex hooks, TOML profiles or the Codex
-lifecycle contract. The untracked local Codex instruction copies are not DSH authority.
-
-Controller owns direction, scope, acceptance criteria and next routing; executor owns implementation
-and verification of assigned work and reports evidence. Ordinary Implementer converges the stable
-accepted direction. Focused Implementer owns reasoning, implementation, runtime feedback and revision
-until core semantics converge; remaining deterministic closure goes to a fresh ordinary Implementer.
-An independent, non-writing Reviewer may challenge evidence when useful; READY requires supported
-evidence for the selected review scope, not mere absence of blockers. It remains a review result,
-and Controller judges product completion.
-See [shared semantics](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)
-and [context design](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md).
-Native child Completed, test PASS, Reviewer READY and task DONE are evidence or mechanical state,
-not product completion by themselves. Core authority and DSH recovery retain their existing exact
-identity/evidence checks. See [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md).
-No compression benchmark or live-profile activation is claimed for template normalization.
-
-## Historical benchmark evidence
-
-Historical ABCD evidence belongs to [Core](https://github.com/Iris0fTheValley/Thaliris#readme); it does not validate this DSH template normalization.
+See [capabilities](CAPABILITIES.md), the [client contract](CLIENT-CONTRACT.md), [Core baseline](CORE-BASELINE.md), [prompt contract](PROMPT-CONTRACT.md).

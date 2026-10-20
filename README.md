@@ -1,162 +1,179 @@
-# Thaliris for DeepSeek Harness
+# Thaliris
 
-语言：简体中文 | [English](README.en.md)
+[English](README.en.md)
 
-一个轻量、Git 原生的 AI 编程上下文与编排层。
+**注意力才是最贵的资源。**
 
-Thaliris 通过选择必要事实、约束和证据，保护高能力模型在聚焦上下文中的有效推理。上下文质量不等于数量，运行时提示词本身也是工作上下文的一部分。无关信息、竞争目标和历史轨迹越多，真正需要推理的信息越容易被稀释或干扰。
+Thaliris 是一个面向 AI 编程 Agent 的**认知编排层**。它不负责把上下文压短，它要解决的是长程任务里的两个问题：
 
-**注意力才是最贵资源。** 这里的注意力指高能力模型在干净、聚焦的上下文中用于解决困难问题的有效认知预算，而不是简单的 Token 价格，也不是 Attention 算法。
+- **强模型的注意力被噪声稀释。** 探索、调试和日志不应留在负责关键判断的那条推理轨迹里。
+- **原始需求和反证在交接中消失。** 一个局部“完成”的报告，不应悄悄覆盖掉此前已经发现的问题。
 
-Thaliris 管理的是信息进入推理路径的条件，而不是重新实现通用 Agent Framework。证据、freshness、memory、任务状态和 adapter 机制服务于正确的信息传递与任务执行，不是为了增加流程。通过认知隔离与合理的模型能力分配，项目争取提高复杂任务的质量和整体效率，但不以丢失必要推理或证据为代价。
+> **Protect the reasoning. Isolate the noise. Isolation without amnesia.**
 
-> **状态：** Beta。设计目标不等于已证明的收益；历史 ABCD 结果只适用于原实验设置，最近的提示词、编排与等待规则优化尚无新的受控质量或成本对照结果。
+Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness 这些 Host 的原生 Agent 能力之上，补上隔离、交接和证据连续性这一层。
 
-## 为什么要做这个项目
+> **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 
-长时间的编码任务往往会不断积累上下文。
+## 为什么不是“上下文管理”
 
-单个代理最终可能同时携带：
+常见做法是在同一个 Agent 里管理更多上下文：压缩、检索、记忆。Thaliris 认为更大的问题不是 token 多，而是**同一条推理轨迹里互相竞争的目标太多**：既要调查又要设计、实现、调试、自审，还得记住此前的失败。
 
-* 仓库探索；
-* 失败的搜索路径；
-* 实现细节；
-* 测试输出；
-* 调试轨迹；
-* 架构推理；
-* 审查标准；
-* 旧决策；
-* 无关的历史上下文。
+所以 Thaliris 管的是**谁来推理、带着什么推理**：
 
-更多上下文并不自动意味着更好的上下文。
+> **为每个推理上下文提供它需要的信息，不因为别的信息存在，就把它也塞进去。**
 
-对于强推理模型，更大的风险往往不是 token 的绝对数量，而是同一条推理轨迹中相互竞争的目标数量。
+名字取自 Thalamus（丘脑，筛选并路由信息）与 Iris（虹膜，调节进入的光量）。
 
-如果要求一个代理同时：
+## 三根支柱
 
-* 调查，
-* 设计，
-* 实现，
-* 验证，
-* 审查自己的设计，
-* 记住此前的失败，
-* 并满足一份庞大的流程检查清单，
+### 1. 认知隔离：把强模型的注意力用在刀刃上
 
-那么它所解决的问题，已经不同于让代理根据必要证据专注回答一个推理问题。
+一个长期的 **Controller** 持有用户目标、硬约束和验收标准。短期角色在全新的上下文里完成局部工作，不继承父级对话，只交回结论、来源、验证结果和会改变决策的未知项。
 
-`Thaliris` 建立在一个简单理念之上：
+| 角色 | 做什么 |
+| --- | --- |
+| Investigator | 在选定范围内调查事实，返回来源、矛盾与未知项 |
+| Implementer | 实现已确定的方向并完成验证 |
+| Focused Implementer | 处理设计与实现高度耦合的问题，直到核心语义收敛 |
+| Reviewer | 可选的独立只读挑战，用证据检验候选方案 |
 
-> **保留有用信息，但不强迫每个角色携带每一条信息。**
+角色按需选用，不是固定流水线。单 Agent、Controller 直接执行或委派都合法。不同角色可以配不同能力的模型：强模型只放在真正需要它的关键节点上。
 
-因此，本项目把上下文边界视为工程架构的一部分。
+### 2. Evidence Continuity：隔离，但不遗忘
 
----
+隔离最大的风险是：审查者发现的反例，经过几轮交接和修复后，被一句“测试通过”悄悄淹没。Thaliris 用这几条规则防止这件事：
 
-## 名字由来
+1. **反证会被登记。** 子角色发现的事实如果改变了局部结论、局部验收或关键未知项，就记录为一条 observation，附带来源、交接链路和它关联的用户需求。
+2. **反证保持可见，直到被明确处置。** 在 Controller 针对当前候选，把每条相关需求明确判定为 *已满足 / 未知 / 需修复 / 已不再相关（并说明理由）* 之前，这条 observation 会在后续交接中持续出现。读过、转发过、确认收到都不算处置。
+3. **新的好消息不能顶掉旧的坏消息。** 之后出现测试 `PASS`、Reviewer `READY`、子代理 `Completed` 或 Core `DONE`，都不能让此前的“需修复 / 未知”自动退场；Controller 必须显式引用并回应那条旧依据。
+4. **在下判断之前重新呈现。** Adapter 在把子代理结果交给 Controller 时，同时附上仍未处置的关键证据，赶在它做下一次“是否完成”的判断之前。这一步不需要额外的 Agent、固定阶段或轮询。
+5. **历史只追加，不改写。** 旧的观察和判断保留为历史，但不会自动被当作当前事实。
 
-Thaliris 由 Thalamus（丘脑） 与 Iris（虹膜） 组合而来。
+Core 只负责保存这些链接和只追加的历史，不判断什么重要；“重要不重要、是否满足需求”始终由 Controller 判断。
 
-丘脑负责筛选与路由进入认知系统的信息，虹膜调节进入视野的光量。Thaliris 借用这一意象来处理 Agent 上下文：控制什么进入推理路径，保留有依据的信息，并隔离彼此无关的工作集。
+```text
+Reviewer 发现反例 ──► observation（来源 + 关联需求）
+                          │
+     后续修复、测试 PASS、子代理 Completed …   ← 都不能让它消失
+                          │
+Controller 明确处置：已满足 / 未知 / 需修复 / 已不再相关
+```
 
----
+### 3. 语义归模型，机械归 Thaliris
 
-## 理念如何形成工作行为
+机械层负责身份、来源、版本、连续性和有界检索；语义判断交给模型。结论都带来源（文件 hash、Git blob、测试观察）；freshness 只说明这些来源没变，不说明所有依赖都没变。证据不足时保持 `UNKNOWN`，不把推测升级为确认。
 
-### 长期决策与短期工作上下文
+## 组成
 
-长期 Controller 保留用户目标、范围、硬不变量、验收条件和已选择的决策依据，决定下一步需要什么工作。短期执行角色承担调查或实施的工作集：搜索路径、调试轨迹和原始日志留在负责该工作的上下文中，返回的是结论、来源位置、验证结果、矛盾和会改变决策的未知项。Controller 不必重新携带全部过程，执行角色也不必背负整个项目历史。
+| 部分 | 职责 |
+| --- | --- |
+| [Thaliris Core](https://github.com/Iris0fTheValley/Thaliris/blob/main/README.md)（共享 Core） | Task ID 与任务记录、observation / judgment 链接、证据与 freshness、项目记忆、里程碑、CAS 写入与回滚 |
+| [Thaliris-codex](https://github.com/Iris0fTheValley/Thaliris-codex) | Codex 原生集成：Fresh Child、角色 profiles、身份与生命周期、证据重新呈现 |
+| [Thaliris-dsh](https://github.com/Iris0fTheValley/Thaliris-dsh/blob/main/README.md) | DeepSeek Harness 插件：Workspace/Session/Agent 集成、可选 Memory |
 
-Fresh Child 是新的原生角色会话，通过选择性 Handoff 接收完成当前工作所需的事实、约束、来源与验收条件。隔离历史不是删除证据：必要的原始文件仍可按位置重新读取，已完成调查的清单和事实应复用。工作集不等于交接集；被记录或保留的信息，不会因此自动传递给每个角色。
+只有一套共享 Core。Core 不运行模型、不调度 Agent、不认证调用者；原生执行由各 Adapter 负责。
 
-| 角色 | 承担的工作 | 为什么区分 |
-| --- | --- | --- |
-| Investigator | 在选定范围内调查事实，给出准确来源、覆盖范围、矛盾与未知项 | 将探索历史留在调查上下文中，不替 Controller 决定架构 |
-| Implementer | 实现已接受的稳定方向，完成必要验证、局部修复和被分配的收尾 | 让确定性工作复用明确契约，不重复开启架构决策 |
-| Focused Implementer | 对耦合的不变量持续推理、实现、观察运行时反馈并修订，直到核心语义收敛 | 为仍可能改变解决方案的问题保留聚焦的认知预算；随后由新的普通 Implementer 承担被分配的确定性收尾 |
-| Reviewer | 在候选方案收敛后，独立、只读地挑战原验收条件、不变量与跨边界行为 | 不携带实现者的完整调试轨迹，用证据检验候选方案，而不是替实现者继续写代码 |
+## 实测观察
 
-角色是按工作形态选择的能力，不是每个任务必须走完的阶段。不会强制所有任务使用多个 Agent、固定审查轮次或统一步骤；明确的单 Agent 执行选择也应保留。是否调查、独立审查或并行，取决于当前证据、决策耦合和实际写入冲突，而不是文件数、调用数或耗时阈值。具体角色绑定与执行模式由各 Host adapter 实现。
+**这项基准测什么：** 我们有意挑了一个很难的单轮重构任务：桌面与 WebUI 共享 Live2D 行为，涉及模型选择、语音/动作队列和退出生命周期。目的不是“一轮修完所有 bug”，而是观察**原始需求能不能穿过调查、实现、交接、审查和修复，持续影响决策**。
 
-### 证据、任务记录与可复用知识
+**结果要这样读：** 每次运行结束后，冻结候选都要接受独立的严格后审，后审会继续找反例。所以每一行都有遗留缺陷，其中不少在起始代码里就已存在。比较时看的是*严重缺口（P1）有没有被守住*，以及*协作行为是否真的发生*。
 
-结论应带有证据来源及其适用范围。文件 hash、Git blob 和 test/runtime observation 可以说明观察了哪个版本；freshness 只核对声明过的来源是否变化，不能证明所有依赖都未改变，也不能替模型判断结论是否仍然适用。证据不足的结论保留为 `UNVERIFIED`；缺少执行或身份观察时保留 `UNKNOWN`，不将推测升级为确认。已有记录只是可检索材料，不是下游必须接受的事实。
+| 样本 | 执行方式 | 独立审查驱动修复 | 后审遗留 P1（原始需求缺口） | P2 | 用时 | API 等价费 |
+|---|---|---|---:|---:|---:|---:|
+| C · 10/14 | Luna 多代理 | 有，局部 | 2 | 3 | 57.1 分 | $0.46 |
+| D · 10/14 | Sol + Luna 多代理 | 有 | 1 | 2 | 40.4 分 | $2.62 |
+| C · 10/19 | Luna（派发被拒，回退单代理） | 无 | 3 | 3 | 19.8 分 | $0.22 |
+| **D · 10/19** | **Sol + Luna 原生多代理** | **有，两个反证触发修复** | **0** | 3 | 34.4 分 | $2.91 |
 
-短期任务记录保存当前 Task ID 的事实、待处理工作和证据，不复制对话 transcript。Core 的 `task_promote` 通过 Task revision CAS，在 `.agent-memory/` 中新增有界的非 `INDEX.md` Markdown 文档，拒绝覆盖已有目标，并可选附带最多 64 个来源引用。同一 promotion 输入可选附带 `index_update`，对 `.agent-memory/` 或 `.milestones/` 中已有的 `INDEX.md` 进行文件 digest CAS、链接校验和完整内容替换；这不会推广其他 milestone 文档。新文档自动生成 `Evidence` 和 `Revision: 1` frontmatter，存在来源描述时附加 `Durable Source Descriptors`；不自动生成类型、`Status` 或确认结论。兼容输入中的 `status` 不参与新文档渲染。已有记忆和其他 milestone 文档可由项目维护者另行维护。Controller 判断哪些信息值得长期保留，哪些只对当前任务有用；持久化与向下一角色传递是两个独立选择。Host 的可选记忆集成另有自己的存储与授权契约。
+表中费用是 API 等价参考值，用于比较，不是实际账单。
 
-每个独立任务都有以 UUID 标识的 Task ID 和自己的本地状态文件。继续已有任务时明确选择 Task ID 与相关证据；开始新任务时创建新的 Task ID，不从旧工作区状态推断当前任务。旧 `ACTIVE`、`UNKNOWN` 或损坏记录不会自动占住唯一任务槽位，但真实的共享文件重叠写入仍需协调。原生会话关联、恢复和权限检查属于 adapter；Task ID 本身不授予权限，也不构成 Host 身份认证。
+历史单代理基线 A 与 B 的冻结候选均接受 GPT-6.1 Sol High 的独立产品后审，且后审各自发现了具体失败反例；它们没有按本次同一标准计数 P1/P2。
 
-执行者完成并验证所分配的工作，向 Controller 报告对应标准的证据、限制和 `UNKNOWN`。Controller 根据原始目标、验收标准和现有证据判断产品是否完成，按需路由未达成标准或会改变判断的未知项，并在完成时记录机械关闭。独立 Reviewer 挑战仅在可能影响决定时进行。测试 `PASS`、Reviewer `READY`、原生 child `Completed` 和 task `DONE` 分别描述各自的结果；任何一项单独都不能证明产品完成。每个必要依赖由一个观察 owner 负责，并依据现有证据判断进一步验证或等待是否会改变结论。
+**D · 10/19 发生了什么：**
 
-## 一个跨模块编码场景
+```text
+Controller 把耦合的设计与实现交给 Sol
+  → Sol 自主派 Luna 调查运行时支持与测试边界
+  → Sol 交回局部候选
+  → Controller 没有把“局部完成”当作结束，发起独立审查
+  → Reviewer 找到两个推翻局部结论的反例：
+      · 用户显式选择的模型会被桌面旧规则覆盖
+      · 退出告别指令可能在事件通道关闭后才发出
+  → Controller 采纳反证，派修复与回归
+```
 
-假设用户要求为一个跨 API、队列与存储层的导出功能增加取消能力，同时保持旧请求兼容。以下是机制示例，不是产品测试或性能实验结果，也不是强制工作流。
+D · 10/19 的独立外部后审没有发现 P0/P1，但报告了三类 P2；这不构成完整产品验收。过程中的原生代理状态冲突按 Codex 原生生命周期异常处理。
 
-1. Controller 明确取消语义、兼容边界与验收场景。Investigator 调查请求入口、队列状态转换和存储写入位置，返回带来源的调用关系、既有测试和未确认的竞态；搜索失败与原始日志留在调查工作集。
-2. Controller 选择相关事实、硬不变量和未知项形成 Handoff。若取消、完成与写入互相耦合，Fresh Focused Implementer 围绕这些不变量实现并验证；方向稳定的独立修改可以交给普通 Implementer。
-3. 实现者返回具体候选、来源版本、测试覆盖和未覆盖情形。核心语义收敛后，剩余确定性同步、回归或 Git 收尾可交给新的普通 Implementer，而不延长原聚焦上下文。
-4. 如果独立挑战会影响验收，Fresh Reviewer 检查诸如「取消与完成同时发生」及旧 API 兼容等边界。未验证的运行时行为继续标记未知；审查发现带着依据返回，而不是自动视为结论。
-5. Controller 使用执行者的证据和可选审查，按原始需求与标准评估候选。未满足标准或会改变决定的未知项继续进入后续工作；条件满足时，Controller 记录机械关闭。只有跨任务仍有价值的取消不变量或已验证 failure mode 才进入项目记忆；其余记录留在对应 Task ID 中。
+这正是 Thaliris 要验证的能力：**局部成功不等于全局结束，反证会实际改变后续工作。**
 
-源码、Git、测试、编译器和实际运行时行为仍然是正确性的依据。Thaliris 复用 Codex、DSH 的原生会话、Agent 与执行能力：它补充上下文选择、交接、记录与证据边界，不另造一套 Agent Runtime。
+**C · 10/19 不是一次成功的多代理运行：** Luna 请求把整段对话历史传给子代理，被 Fresh Context 规则正确拒绝；它没有改用独立上下文重新派发，后续退回单代理完成。这个结果说明隔离保护在起作用，也显示关键调度节点需要足够强的模型。
 
-## DSH 的运行时契约与产品能力
+**目前还不能证明的：** 每行都是单次运行，各批次的 Host 与模型 effort 不完全一致，不是单变量实验；混合配置总成本更高；D · 10/19 中审查与修复阶段的反证虽然实际推动了修复，但没有全部登记为正式 observation，Evidence Continuity 的持久化链路仍在完善中。详见 [ABCD 基准](https://github.com/Iris0fTheValley/Thaliris/tree/main/benchmarks/abcd) 与[基准协议](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-benchmark-protocol.md)。
 
-@thaliris/dsh-plugin 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)加入 Thaliris task records 和显式 Controller 工具。它使用 DSH 原生 Workspace、持久 Session、Agent、subagent、Settings、model catalog、Plugin Manager 和 lifecycle。Python Core 是单独的 [Thaliris distribution](https://github.com/Iris0fTheValley/Thaliris)；本仓库不包含 Core 或 Codex adapter 代码副本。
+## 快速开始
 
-Runtime package 提供可选的 Remote API 和共享 Web/Desktop client。策略页编辑原生 role、model、workspace 和 memory 设置。Memory capability 与默认本地 provider 是独立可选 package；没有它们或 client UI 时，task routing 和 close 仍可用。契约与验证边界见 [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md)、[CAPABILITIES.md](CAPABILITIES.md) 和 [CORE-BASELINE.md](CORE-BASELINE.md)。
+需要 Python 3.11+。Git 可选；使用下方 Git URL 安装需要 Git。
 
-### 共享语义与原生策略
+```bash
+uv tool install git+https://github.com/Iris0fTheValley/Thaliris
+cd your-repository
+thaliris-core --root . init
+TASK_ID=$(thaliris-core --root . task-start "example task" | python -c 'import json,sys; print(json.load(sys.stdin)["task_id"])')
+thaliris-core --root . --task-id "$TASK_ID" task-status
+```
 
-Thaliris 是 Git-native 上下文与 Agent 编排控制器，不是通用身份认证系统或独立 Agent Runtime。默认采用 `delegated`：长期 Controller 负责方向、范围、验收标准和后续路由；开放式、多文件、多步或连续调查交给短期 Investigator，稳定方向的实现交给 Implementer。Controller 在任务边界内的普通读取、Git 和诊断合法；按用途与工作集选择委派，不设数值权限门槛。用户明确选择 `controller-direct` 或 `single-agent` 时，执行方式优先于效率默认，同时继续遵守任务范围、只读角色边界及用户内容保护。
+每个任务有独立的 Task ID，后续操作显式传入 `--task-id`。只安装 Core 不会启用多代理；需要原生集成时，按 [Codex](https://github.com/Iris0fTheValley/Thaliris-codex/blob/main/README.md) 或 [DSH](https://github.com/Iris0fTheValley/Thaliris-dsh) 指南安装。
 
-这些是共享工作语义，不构成 Host actor 身份证明或无法绕过的工具保证。DSH 使用本机可编辑的 Controller/role policy；本 README 对 DSH 原生能力的声明以本仓后文列出的 adapter 契约和验证边界为准，不把 Codex Hook、Codex 原生生命周期或 Codex 的任务处置能力写成 DSH 功能。
+初始化后的仓库：
+
+```text
+.agent-memory/   # 经选择、可跨任务复用的项目知识（可纳入版本控制）
+.milestones/     # 长期进度：scope / decisions / progress / verification
+.context/tasks/<task-id>/state.json   # 单个任务的状态与证据（默认被 Git 忽略）
+```
+
+任务状态保存结构化的事实、observation 和判断，不保存对话 transcript。持久化和交接是两个独立选择：记录下来的东西不会自动塞给每个角色。
+
+## 不是什么
+
+不是 Agent runtime、工作流引擎、固定多代理流水线、向量数据库或 RAG 系统、全仓自动总结器，也不能替代源码、测试、编译器和运行时行为。
+
+删除 Thaliris，底层开发流程也不应因此变得不正确。
+
+## 延伸阅读
+
+- [DESIGN.md](https://github.com/Iris0fTheValley/Thaliris/blob/main/DESIGN.md) — Core 架构与契约
+- [路由协议](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md) — 路由、交接、Evidence Continuity、等待与验收
+- [任务授权契约](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-task-authority.md)
+- [提示词归属与研究动机](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md) — 含相关文献
+- [角色说明](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-role-packs.md) · [分包与 API 边界](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/host-neutral-packaging.md)
+
+## DSH 原生集成
+
+@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core；本仓库不复制 Core 或 Codex adapter。
+
+DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板采用 inherit 路由且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
+
+Memory 是独立可选能力，默认关闭。可单独安装 memory capability 和本地文本 provider；task routing 和 close 无需启用 Memory 或 client UI。没有 embeddings/vector RAG 或自动检索；Memory 读取受授权控制，写入遵循用户许可和 Core task 检查。详细边界见[能力说明](CAPABILITIES.md)和[客户端契约](CLIENT-CONTRACT.md)。
 
 ## 安装与配置
 
-需要 Node.js 22.x 的 22.19 或更高版本，或 Node.js 24+，以及 Python 3.11+。该适配器对应 DSH source revision 639ed015397290b3745d163aafe02ffee4aa3f84，并使用 Thaliris Core 0.4.4 source revision [`56e48ac299dd2c5c4b16c992db732a55b7790893`](https://github.com/Iris0fTheValley/Thaliris/tree/56e48ac299dd2c5c4b16c992db732a55b7790893)。此 pin 的 packed smoke 从源码构建并安装本地 wheel；这里不声明已有 PyPI wheel 发布。详见 [Core dependency provenance](CORE-BASELINE.md)。Core 为插件配置的 Python 环境提供 thaliris.core 和 thaliris.authority。本指南和后文的共享语义链接不会自动把更新后的 Codex-specific admission、Hook、wait、profile 或语义验收契约移植到此 DSH pin；本仓库仅声明列出的 revision 与已记录检查所覆盖的兼容性。
+构建需要 Node.js 22.19+ 或 24+，运行 Core 需要 Python 3.11+。从兼容的 DSH/Core 配对构建本地 archive；当前配对和版本来源见[Core baseline](CORE-BASELINE.md)。构建 bundle patch 和共享 Web/Desktop client，然后在仓库根目录及两个可选 Memory 组件目录分别打包：
 
-Runtime、Remote API 和可选 memory entries 默认禁用。通过原生 Plugin Manager 将本地 archives 安装到指定 profile：
+~~~sh
+npm run build:bundle
+DSH_SOURCE=<pinned DSH checkout> npm run build:client
+npm pack
+~~~
 
-    dsh plugin --profile <profile> add <artifact-dir>/thaliris-dsh-plugin-0.2.0.tgz <artifact-dir>/thaliris-dsh-memory-0.1.0.tgz <artifact-dir>/thaliris-dsh-memory-local-0.1.0.tgz
+通过 DSH Plugin Manager 安装主插件 archive。只有需要 Memory 时才一并安装两个可选 archive：
 
-启用 runtime 前，配置 pythonExecutable、corePath 和 authorityDirectory 的绝对路径。corePath 指向该 Python 环境所用的 Core 安装。将外部 authority directory 放在受治理 Workspace 之外，也不要把凭据放入插件配置。把规范 Git root 注册为原生 DSH Workspace，创建或恢复持久 root Session，再在 policy.workspaces 下绑定该 Workspace ID 和精确 root。
+~~~sh
+dsh plugin --profile <profile> add <path>/thaliris-dsh-plugin-0.2.0.tgz <path>/thaliris-dsh-memory-0.1.0.tgz <path>/thaliris-dsh-memory-local-0.1.0.tgz
+~~~
 
-在 pinned DSH checkout 上运行 npm run build:bundle，并设置 DSH_SOURCE=<checkout> 后运行 npm run build:client，以构建 profile patch 和 client bundle。client build 使用 DSH Web client preset，Desktop 共用该 bundle。之后在本仓库和两个可选组件目录分别运行 npm pack，生成三个本地 archives。patch 从可见 role templates 生成，且 runtime/API 默认禁用。捆绑的 Zod 许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。
 
-Role records、prompt、tool allowlist、model route、memory grant 和 context permission 可在原生策略表单中编辑。路由使用 DSH model catalog：inherit 采用原生 parent 配置；fixed 选择一个已配置 route；allowed 允许 Controller 在用户配置的 route 集合中为一个 slice 选择。Thaliris 不会对模型排序或改写这些设置。
-
-## 行为与边界
-
-原生 root Agent、持久 Session ancestry 和配置的 native Workspace 必须与对应 Task ID 的 Core Authority anchor 相符。同一原生 root Session 可以关联多个独立 Core task；task-specific workstream、close、reconcile、inspect 和诊断读取都选择明确的 Task ID。仅有相同仓库路径或 Workspace 不会自动接续旧任务。委派会启动新的原生 child，只传递选定的有界 handoff、完整 role prompt 和明确选择的 memory context。Controller 按原始目标、验收标准和现有证据判断产品完成，再请求 task close；`thaliris_task_close` 执行 Core 的状态、revision 与可选 expected ID 检查后设置机械状态 `DONE`，不会自行核验验收目标。child `Completed` 和 task `DONE` 都不能单独证明产品完成。
-
-恢复依赖精确的原生 child correlation 和持久 terminal Session evidence。仅在 catalog 中可见或暂时不活跃不能证明 child 已结束。若身份、持久记录或 terminal reason 缺失，结果保持 UNKNOWN，对应 reservation 保留在该 Task ID 下，并阻止同一任务的替换工作或关闭，直至取得足够的终态证据。该 reservation 不会把另一 Task ID 的状态变成冲突证据；DSH 尚未实现更广泛的原生 UNKNOWN abandonment 路径。共享 OS 访问与 writer lease 是治理事实，不构成普遍的 actor 身份认证。
-
-Memory 默认禁用。可选 capability 接收可替换的异步 provider；@thaliris/dsh-memory-local 在 native storage 上提供有界文本 provider。系统没有 embeddings、vector/RAG、凭据管理或自动检索。Memory search/read 是只读且 task-independent；task inspect、diagnostics、approval 和 memory write 都显式选择 Task ID。manual 和 review 写入经 bridge 形成 Core proposal，并使用对应 Task 的 Authority 与 CAS 检查；auto provider 写入前先验证 parent task association，且需要独立持久记录的 `autoAuthorized: true` opt-in。移除任一可选 memory package 后，task routing 和 close 仍可用。
-
-提取仓库的 bridge、native composition、packed package-install 和 client 检查使用 scripted LLM 及 pinned DSH source，不使用在线模型或当前安装 profile。原始 source repository 另行针对 Core source revision 256f760 验证了 live Web integration：真实 task 执行到第五个 child，拒绝该 child 调用 native root tools，并显式 close 为 DONE。这不表示提取仓库的 package smoke 启动过 browser。Desktop 共用 Web client bundle，但没有启动 Desktop binary。
-
-## 开发与验证
-
-检出 pinned DSH source 和 Core source revision。将 DSH_SOURCE 设为 DSH checkout，将 THALIRIS_CORE_PATH 设为包含 thaliris 源码包的目录，并将 THALIRIS_TEST_PYTHON 设为隔离的 Python 3.11+ 环境。Bridge 与 native source-composition 检查使用该源码路径。Packed activation smoke 需要从 pinned Core source 构建本地 wheel 并安装到隔离 Python 环境；将 THALIRIS_TEST_CORE_PATH 设为已安装 package 的目录，使 smoke 检查该 wheel。然后运行：
-
-    npm run build:bundle
-    npm run build:client
-    npm run test:native
-    npm run test:client
-    python -m pytest tests/test_bridge.py -q
-
-Client build 和 client test runner 会在 DSH checkout 内创建临时 package workspace，并在结束时清理。Native tests 使用临时 fixture repositories。Packed activation smoke 还需要 THALIRIS_PACK_DIR（包含三个本地 archives）、THALIRIS_TEST_CORE_PATH（测试环境内已安装的 Core package）和 THALIRIS_TEST_TMP_ROOT（任务专属临时目录），然后运行 npm run test:install。该 smoke 验证 packed runtime 导入已安装 Core，通过 DSH 启动、检查并关闭 task；移除可选 memory bundles 后，这些工具仍可用。
-
-Core 仓库包含 [ABCD 基准协议](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-benchmark-protocol.md)和规范结果。兄弟仓库 [Thaliris Codex adapter](https://github.com/Iris0fTheValley/Thaliris-codex) 使用同一个 Core。
-
-
-## 原生策略与提示词边界
-
-DSH 使用原生持久化的 Workspace/Session/Agent 及 subagent 关联信息、显式的 Python Core bridge，以及由用户编辑的 Controller/role 策略。`policy.mjs` 管理 Controller 模板；`role-templates.mjs` 管理初始角色提示词。模型路由、工具 allowlist、memory/context 授权和启用记录仍属于用户策略。模板变更不会静默覆盖已有存储角色；显式空数组也会保持为空。`build-bundle.mjs` 根据这些模板生成默认禁用的 bundle patch。Client 输出来自 `client/*`。该适配器不会安装 Codex hooks、TOML profiles 或 Codex lifecycle 契约。本地未跟踪的 Codex 指令副本不构成 DSH 的权威来源。
-
-Controller 负责方向、范围、验收标准和后续路由；执行角色负责实现、验证并报告证据。普通 Implementer 收敛已接受的稳定方向。Focused Implementer 负责推理、实现、运行时反馈和修订，直到核心语义收敛；剩余确定性收尾交给新的普通 Implementer。独立只读 Reviewer 可用于挑战证据；`READY` 需要对选定审查范围有支持证据，不能只凭没有阻塞项；它仍是审查结果，由 Controller 判断产品是否完成。见[共享语义](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-routing-protocol.md)和[上下文设计](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-prompt-design.md)。
-原生 child `Completed`、测试 `PASS`、Reviewer `READY` 和 task `DONE` 都是证据或机械状态，不能单独替代产品验收。Core 授权和 DSH 恢复继续使用现有的精确身份与证据检查。见 [CLIENT-CONTRACT.md](CLIENT-CONTRACT.md)。本次模板规范化没有压缩基准测试或运行中 profile 激活方面的结论。
-
-## 历史基准证据
-
-历史 ABCD 证据属于 [Core](https://github.com/Iris0fTheValley/Thaliris#readme)，不能用于验证本次 DSH 模板规范化。
+更多约束和验证范围见[能力说明](CAPABILITIES.md)、[客户端契约](CLIENT-CONTRACT.md)、[Core baseline](CORE-BASELINE.md)、[提示词契约](PROMPT-CONTRACT.md)。
