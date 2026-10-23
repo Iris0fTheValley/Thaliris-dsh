@@ -125,6 +125,11 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      # The linux-x64 system addon (flock) is not shipped in the source tree;
+      # build it exactly as the pinned DSH tree defines (host addon only).
+      - name: Build pinned DSH host system addon
+        working-directory: dsh-src
+        run: pnpm build:native-system
       - name: Native composition (scripted model)
         working-directory: adapter
         run: npm run test:native
@@ -142,7 +147,8 @@ jobs:
         if: ${{ !cancelled() }}
         id: pack
         run: |
-          python -m venv "$RUNNER_TEMP/core-venv"
+          # --copies: the plugin realpath()s the interpreter, so a symlinked venv would lose the wheel
+          python -m venv --copies "$RUNNER_TEMP/core-venv"
           "$RUNNER_TEMP/core-venv/bin/python" -m pip install ./shared-core
           echo "core=$("$RUNNER_TEMP/core-venv/bin/python" -I -c 'import pathlib, thaliris; print(pathlib.Path(thaliris.__file__).parent)')" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/pack" "$RUNNER_TEMP/smoke"
