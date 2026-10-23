@@ -7,7 +7,15 @@ context permissions are unchanged. DSH persona receives the selected role prompt
 selected handoff is a separate payload. Core does not infer a semantic projection.
 
 Global Codex instructions, hooks, project routers and TOML profiles are not this
-adapter's installation model. Core bridge/native correlation behavior is unchanged.
+adapter's installation model. The seeds are Investigator, Implementer, Focused
+Implementer, Reviewer, Curator and Reasoning Specialist (non-writing challenge of a
+framing or decision basis); the Codex-only Verifier is not seeded. Every seed tells
+the child to record decision-changing local facts with `thaliris_observe` when its
+dispatch grants it, otherwise to return them in FINAL, without reconstructing global
+requirements. Focused Implementer returns remaining work without choosing a successor.
+The Controller template describes evidence continuity (register, dispatch association,
+status, judgment), dynamic task context, human-instructed mode switching, per-dispatch
+model/effort selection and dispatch-time role binding, as concepts tied to the tools.
 Template normalization adds semantic mutation/evidence practice and the full Focused
 loop/endpoint, while keeping review optional, independent and evidence based. Executors
 report criterion-linked evidence and UNKNOWN; Controller judges product completion from

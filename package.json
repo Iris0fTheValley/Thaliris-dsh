@@ -29,6 +29,7 @@
     "core_bridge.py",
     "README.md",
     "CORE-BASELINE.md",
+    "core.lock.json",
     "CAPABILITIES.md",
     "CLIENT-CONTRACT.md",
     "PROMPT-CONTRACT.md",

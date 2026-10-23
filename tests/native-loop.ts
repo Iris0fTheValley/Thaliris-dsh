@@ -27,7 +27,9 @@ const helpers = await import(pathToFileURL(join(upstream, 'packages/core/agent-l
 const { MockAdapter, textResponse, toolCallResponse, maxTokensResponse } = helpers
 const pluginUrl = new URL('../index.mjs', import.meta.url).href
 const corePath = process.env.THALIRIS_CORE_PATH!
-const names = ['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile']
+const names = ['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
+  'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode']
+const observeTool = 'thaliris_observe'
 const selectedContract = { human_instruction: 'Implement the selected bounded example. UNSELECTED_AUTHORITY_SENTINEL', boundary: 'Only the selected fixture.', invariants: 'Fresh context, root-only task authority.', acceptance: 'Controller assesses the returned answer.', execution_mode: 'delegated' }
 const handoff = { goal: 'Return the selected answer', scope: 'fixture only', invariants: 'Do not widen authority', acceptance: 'Return answer 42', context: 'SELECTED_CONTEXT_ONLY' }
 const signal = () => new AbortController().signal
@@ -142,6 +144,7 @@ async function closedLoop() {
       assert.ok(!JSON.stringify(options).includes('UNSELECTED_AUTHORITY_SENTINEL'))
       for (const name of names) assert.ok(!(options.tools ?? []).some((tool: any) => tool.name === name))
       assert.ok(!(options.tools ?? []).some((tool: any) => tool.name === 'unselected_fixture_tool'))
+      assert.ok(!(options.tools ?? []).some((tool: any) => tool.name === observeTool), 'no evidence association, no observation grant')
       // Deliberately calls a filtered tool: native execution refuses it.
       return toolCallResponse('rogue', names[0], { goal: 'widen', contract: selectedContract })
     },
@@ -178,7 +181,7 @@ async function closedLoop() {
     parent.followup(createUserMessage({ content: [{ type: 'text', text: 'Please perform the bounded task.' }], source: { kind: 'user' } }))
     await parent.whenIdle()
     await Promise.all(bodyDenials)
-    assert.equal(deniedInBody, 5)
+    assert.equal(deniedInBody, names.length)
     assert.equal((await fixture.state(selectedTaskId)).status, 'DONE', JSON.stringify({ parent: parent.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)), child: child?.session.snapshotEvents().filter(event => ['tool/result', 'turn/end'].includes(event.type)) }))
     assert.equal((await fixture.authority(selectedTaskId)).status, 'DONE')
     assert.equal((await fixture.authority(selectedTaskId)).dsh_controller_id, parent.id)
@@ -234,7 +237,7 @@ async function closedLoop() {
       await ctx.loader.update(fixture.entry.id, { disabled: false })
       await ctx.loader.await()
       for (const name of names) assert.ok(ctx.tools.get(name))
-      assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name)).length, 5)
+      assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name)).length, names.length)
     }
     fixture.script.push(textResponse('native normal answer'))
     parent.followup(createUserMessage({ content: [{ type: 'text', text: 'Ordinary native question.' }], source: { kind: 'user' } }))
@@ -354,6 +357,102 @@ async function unloadActiveChild() {
   } finally { await fixture.clean() }
 }
 
+async function evidenceContextAndMode() {
+  let taskId = '', handoffId = '', observationId = '', digest = '', revision = 0
+  const script = [
+    toolCallResponse('start', names[0], { goal: 'Evidence continuity example', contract: selectedContract }),
+    (options: any) => {
+      const started = lastTool(options)
+      taskId = started.task_id
+      return toolCallResponse('register', names[7], { task_id: taskId, base_revision: started.revision, requirements: [{ id: 'R1', workchain_ref: 'W1' }] })
+    },
+    (options: any) => {
+      const registered = lastTool(options)
+      return toolCallResponse('context', names[6], { task_id: taskId, base_revision: registered.revision, milestone: 'M1',
+        records: [{ id: 'D1', kind: 'decision', text: 'CONTEXT_DECISION_SENTINEL keep the external Core.' }] })
+    },
+    (options: any) => {
+      const recorded = lastTool(options)
+      assert.match(recorded.task_context, /CONTEXT_DECISION_SENTINEL/)
+      return toolCallResponse('work', names[2], { task_id: taskId, base_revision: recorded.revision, workstream: 'evidence', role: 'Implementer', handoff, evidence: { candidate: 'C1', requirement_refs: ['R1'] } })
+    },
+    (options: any) => {
+      assert.equal(options.model, 'selected-child')
+      assert.ok((options.tools ?? []).some((tool: any) => tool.name === observeTool), 'evidence association grants the observation tool')
+      for (const name of names) assert.ok(!(options.tools ?? []).some((tool: any) => tool.name === name))
+      assert.doesNotMatch(JSON.stringify(options.messages), /CONTEXT_DECISION_SENTINEL/, 'Controller task context does not reach the child')
+      assert.match(JSON.stringify(options.messages), /evidence_association/)
+      return toolCallResponse('observe', observeTool, { id: 'O1', text: 'Answer 42 verified locally.', source_refs: ['S1'], sources: [{ id: 'S1', kind: 'local', locator: 'fixture', summary: '42' }] })
+    },
+    (options: any) => {
+      const observed = lastTool(options)
+      observationId = observed.observation_id
+      handoffId = observed.handoff_id
+      assert.equal(observed.candidate, 'C1')
+      assert.equal(observationId, `${handoffId}.O1`)
+      return textResponse('answer 42')
+    },
+    (options: any) => {
+      const result = lastTool(options)
+      assert.equal(result.native_completed, true)
+      assert.equal(result.evidence_handoff_id, handoffId)
+      assert.deepEqual(result.route, { provider: 'mock', model: 'selected-child' })
+      assert.match(result.role_sha256, /^[0-9a-f]{16}$/)
+      assert.equal(result.evidence_continuity.unincorporated_total, 1, 'unresolved evidence returns with the child result')
+      return toolCallResponse('status', names[5], { task_id: taskId })
+    },
+    (options: any) => {
+      const status = lastTool(options)
+      assert.deepEqual(status['Evidence Continuity'].unincorporated, [{ requirement_ref: 'R1', observation_id: observationId, candidate: 'C1', handoff_id: handoffId }])
+      assert.equal(status.Authority.execution_mode, 'delegated')
+      assert.ok(JSON.stringify(options.messages).includes('CONTEXT_DECISION_SENTINEL'), 'root receives its recorded task context as dynamic context')
+      digest = status.Authority.sha256
+      revision = status.Task.revision
+      return toolCallResponse('judge', names[8], { task_id: taskId, base_revision: revision, judgment: { id: 'J1', candidate: 'C1', requirement_ref: 'R1', observation_refs: [observationId], outcome: 'satisfied', reasoning: 'Observed answer meets R1.' } })
+    },
+    (options: any) => {
+      const judged = lastTool(options)
+      assert.equal(judged['Evidence Continuity'].unincorporated_total, 0)
+      return toolCallResponse('mode', names[9], { task_id: taskId, base_revision: judged.revision, expected_authority_sha256: digest, mode: 'controller-direct', human_instruction: 'stale digest' })
+    },
+    (options: any) => {
+      assert.match(JSON.stringify(options.messages.at(-1)), /TASK_AUTHORITY_CHANGED/, 'stale authority digest is refused')
+      return toolCallResponse('inspect', names[1], { task_id: taskId })
+    },
+    (options: any) => {
+      const inspected = lastTool(options)
+      return toolCallResponse('mode', names[9], { task_id: taskId, base_revision: inspected.state.revision, expected_authority_sha256: inspected.authority_sha256, mode: 'controller-direct', human_instruction: 'The user chose controller-direct.' })
+    },
+    (options: any) => {
+      const switched = lastTool(options)
+      assert.equal(switched.execution_mode, 'controller-direct')
+      return toolCallResponse('work-again', names[2], { task_id: taskId, base_revision: switched.revision, workstream: 'blocked', role: 'Implementer', handoff })
+    },
+    (options: any) => {
+      assert.match(JSON.stringify(options.messages.at(-1)), /THALIRIS_DELEGATED_INTENT_REQUIRED/, 'controller-direct mode does not dispatch delegated children')
+      return textResponse('Controller finished evidence loop')
+    },
+  ]
+  const steps = script.length
+  const fixture = await setup(script)
+  try {
+    fixture.parent.followup(createUserMessage({ content: [{ type: 'text', text: 'Run the evidence loop.' }], source: { kind: 'user' } }))
+    await fixture.parent.whenIdle()
+    assert.equal(fixture.mock.requests.length, steps, JSON.stringify(fixture.parent.session.snapshotEvents().filter(event => event.type === 'tool/result').map(event => event.data).slice(-2)))
+    const ledger = await fixture.state(taskId)
+    assert.equal(ledger.evidence_continuity.observations[0].producer, `handoff:${handoffId}`)
+    assert.match(ledger.evidence_continuity.observations[0].native_actor, /^dsh-child:/)
+    assert.equal(ledger.evidence_continuity.judgments[0].producer, 'dsh:controller')
+    assert.equal((await fixture.authority(taskId)).contract.execution_mode, 'controller-direct')
+    const rootObserve = await fixture.execute(observeTool, { id: 'O9', text: 'forged', source_refs: ['S1'] })
+    assert.equal(rootObserve.isError, true)
+    assert.match(JSON.stringify(rootObserve.content), /THALIRIS_CHILD_DISPATCH_REQUIRED/)
+    assert.equal((await fixture.state(taskId)).evidence_continuity.observations.length, 1, 'the Controller cannot fabricate a child observation')
+    console.log('PASS evidence association -> adapter-bound child observation -> status/judgment; task context reaches only the root; stale digest refused; human-instructed mode switch gates delegation')
+  } finally { await fixture.clean() }
+}
+
 await closedLoop()
+await evidenceContextAndMode()
 await failureAndBoundary()
 await unloadActiveChild()

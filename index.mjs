@@ -7,8 +7,11 @@ import { readPolicy, selectedRole } from './policy.mjs'
 export { Config } from './policy.mjs'
 export const name = 'thaliris-dsh'
 export const inject = ['agents', 'systemPrompt', 'tools', 'subagents', 'subprocess', 'workspaceRegistry', 'sessionPersistence', 'llm']
-export const TOOL_NAMES = Object.freeze(['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile'])
+export const TOOL_NAMES = Object.freeze(['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
+  'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode'])
 export const MEMORY_TOOLS = Object.freeze(['thaliris_memory_read', 'thaliris_memory_search', 'thaliris_memory_propose'])
+/** Granted by the adapter only to a child whose dispatch carries an evidence association. */
+export const EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])
 const bridgePath = fileURLToPath(new URL('./core_bridge.py', import.meta.url))
 const string = { type: 'string' }
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false })
@@ -17,6 +20,12 @@ const handoffSchema = object({ goal: string, scope: string, invariants: string, 
 const identitySchema = { task_id: string, base_revision: { type: 'integer' } }
 const memoryContextSchema = { type: 'array', maxItems: 4, items: object({ provider: string, operation: { type: 'string', enum: ['read', 'search'] }, key: string, query: string, limit: { type: 'integer', minimum: 1, maximum: 20 }, maxBytes: { type: 'integer', minimum: 1, maximum: 16384 } }, ['provider', 'operation', 'maxBytes']) }
 const routeSchema = object({ provider: string, model: string, reasoningEffort: string }, ['provider', 'model'])
+const strings = { type: 'array', items: string }
+const sourceSchema = object({ id: string, kind: string, locator: string, summary: string })
+const evidenceSchema = object({ candidate: string, requirement_refs: strings })
+const recordSchema = object({ id: string, kind: string, text: string, source_refs: strings, status: string, supersedes: strings }, ['id', 'kind', 'text'])
+const judgmentSchema = object({ id: string, candidate: string, requirement_ref: string, observation_refs: strings, outcome: { type: 'string', enum: ['satisfied', 'unknown', 'repair', 'no-current-impact'] }, reasoning: string, judgment_refs: strings }, ['id', 'candidate', 'requirement_ref', 'observation_refs', 'outcome', 'reasoning'])
+const roleDigest = role => createHash('sha256').update(JSON.stringify(role)).digest('hex').slice(0, 16)
 function validate(parameters, args) {
   const errors = validateJsonSchemaValue(parameters, args)
   if (errors.length) throw new Error(`THALIRIS_INVALID_ARGUMENTS: ${errors.join('; ')}`)
@@ -33,6 +42,9 @@ export function apply(ctx, config) {
   const python = realpathSync(config.pythonExecutable), corePath = realpathSync(config.corePath)
   let disposed = false, tail = Promise.resolve(), bridgeTail = Promise.resolve()
   const cancellations = new Set(), operations = new Set(), runs = new Set(), childGrants = new WeakMap()
+  // Bounded Controller task context per native root, re-supplied as DSH dynamic
+  // context; it is recorded history, never acceptance.
+  const taskContexts = new Map(), resumeAttempted = new Set()
   function isNativeRoot(agent) {
     const header = agent?.session.header
     return !!agent && ctx.agents.get(agent.id) === agent && ctx.agents.roots().includes(agent)
@@ -103,10 +115,39 @@ export function apply(ctx, config) {
       } catch { return '' }
     },
   })
+  ctx.systemPrompt.context({ name: 'thaliris:task-context', order: ctx.systemPrompt.getContextOrder('SUBAGENT_DELEGATION') + 1,
+    text: ({ agent }) => {
+      if (disposed || !isNativeRoot(agent)) return ''
+      if (!taskContexts.has(agent.id)) { restoreContext(agent); return '' }
+      return [...taskContexts.get(agent.id).values()].filter(Boolean).join('\n\n')
+    },
+  })
+  function rememberContext(agent, taskId, text) {
+    if (!agent || typeof taskId !== 'string' || text === undefined) return
+    const contexts = taskContexts.get(agent.id) ?? new Map()
+    if (text) contexts.set(taskId, text)
+    else contexts.delete(taskId)
+    taskContexts.set(agent.id, contexts)
+  }
+  /** After a process restart, restore context for tasks anchored to this exact native root. */
+  function restoreContext(agent) {
+    if (resumeAttempted.has(agent.id)) return
+    resumeAttempted.add(agent.id)
+    const cancel = new AbortController()
+    cancellations.add(cancel)
+    bridge(agent, 'resume', {}, cancel.signal).then(result => {
+      if (taskContexts.has(agent.id)) return
+      taskContexts.set(agent.id, new Map(result.tasks.filter(task => task.task_context).map(task => [task.task_id, task.task_context])))
+    }, () => {}).finally(() => cancellations.delete(cancel))
+  }
   function bridge(agent, operation, args, signal) {
     const pending = bridgeTail.then(() => bridgeExecute(agent, operation, args, signal))
     bridgeTail = pending.catch(() => {})
-    return pending
+    return pending.then(result => {
+      if (result && Object.hasOwn(result, 'task_context') && isNativeRoot(agent)) rememberContext(agent, args.task_id, result.task_context)
+      if (operation === 'close' && result?.status === 'DONE') rememberContext(agent, args.task_id, null)
+      return result
+    })
   }
   async function bridgeExecute(agent, operation, args, signal) {
     const bound = await binding(agent)
@@ -147,8 +188,9 @@ export function apply(ctx, config) {
     (args, agent, signal) => bridge(agent, 'start', args, signal))
   register(TOOL_NAMES[1], 'Inspect the explicitly selected Core task and unresolved reservation without inferring outcomes.', object({ task_id: string }),
     (args, agent, signal) => bridge(agent, 'inspect', { task_id: args.task_id }, signal))
-  register(TOOL_NAMES[2], 'Select one editable role and bounded handoff for a fresh native child.', object({ ...identitySchema, workstream: string, role: string, handoff: handoffSchema, route: routeSchema, memoryContext: memoryContextSchema }, [...Object.keys(identitySchema), 'workstream', 'role', 'handoff']), async (args, agent, signal) => {
-    const policy = readPolicy(config), role = selectedRole(policy, args.role)
+  register(TOOL_NAMES[2], 'Select one editable role, a bounded handoff, an optional model route/effort and an optional evidence association (candidate label and registered requirement refs) for a fresh native child.', object({ ...identitySchema, workstream: string, role: string, handoff: handoffSchema, route: routeSchema, memoryContext: memoryContextSchema, evidence: evidenceSchema }, [...Object.keys(identitySchema), 'workstream', 'role', 'handoff']), async (args, agent, signal) => {
+    // The role is bound at dispatch: later Settings edits never reinterpret this child.
+    const policy = readPolicy(config), role = structuredClone(selectedRole(policy, args.role))
     if (!role.context.handoff) throw new Error('THALIRIS_ROLE_HANDOFF_DENIED')
     const provider = ctx.subagents.getProvider(config.subagentProvider)
     if (!provider || provider.inheritsParentContext !== false) throw new Error('THALIRIS_FRESH_PROVIDER_REQUIRED')
@@ -170,32 +212,67 @@ export function apply(ctx, config) {
       if (selection.operation === 'read' && typeof selection.key !== 'string' || selection.operation === 'search' && (typeof selection.query !== 'string' || !Number.isSafeInteger(selection.limit))) throw new Error('THALIRIS_MEMORY_SELECTION_REQUIRED')
       selectedMemory.push({ selection, result: await memory(selection, agent, signal, selection.operation) })
     }
-    const prompt = JSON.stringify({ task_id: args.task_id, workstream: args.workstream, role: role.id, ...args.handoff, ...(selectedMemory.length ? { memory_context: selectedMemory } : {}) })
-    const selected = { workstream: args.workstream, role: role.id, handoff_sha256: createHash('sha256').update(prompt).digest('hex'), correlation: `thaliris:${randomUUID()}` }
-    let begun = await bridge(agent, 'begin', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify(selected) }, signal)
+    if (args.evidence && (args.evidence.requirement_refs.length > 64 || args.evidence.requirement_refs.some(ref => typeof ref !== 'string'))) throw new Error('THALIRIS_INVALID_EVIDENCE_ASSOCIATION')
+    const evidence = args.evidence && { handoff_id: 'H' + randomUUID().replaceAll('-', '').slice(0, 12), candidate: args.evidence.candidate, requirement_refs: [...args.evidence.requirement_refs] }
+    const prompt = JSON.stringify({ task_id: args.task_id, workstream: args.workstream, role: role.id, ...args.handoff, ...(selectedMemory.length ? { memory_context: selectedMemory } : {}),
+      ...(evidence ? { evidence_association: { candidate: evidence.candidate, requirement_refs: evidence.requirement_refs, observation_tool: EVIDENCE_TOOLS[0] } } : {}) })
+    // The chosen model/effort and role identity are recorded with the reservation.
+    const selected = { workstream: args.workstream, role: role.id, handoff_sha256: createHash('sha256').update(prompt).digest('hex'), correlation: `thaliris:${randomUUID()}`,
+      // Compact: archived reservations count toward Core's bounded routing state.
+      role_sha256: roleDigest(role), route: route ? `${route.provider}/${route.model}${route.reasoningEffort !== undefined ? '@' + route.reasoningEffort : ''}` : 'inherit',
+      ...(evidence ? { evidence_handoff_id: evidence.handoff_id } : {}) }
+    let begun = await bridge(agent, 'begin', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify(selected), ...(evidence ? { evidence } : {}) }, signal)
     let run
+    const reservationBound = Promise.withResolvers()
+    reservationBound.promise.catch(() => {})
     try {
       run = await ctx.subagents.start(config.subagentProvider, { parent: agent, signal, label: selected.correlation, prompt: [{ type: 'text', text: prompt }], maxDepth: 1,
-        toolFilter: { allow: role.tools, deny: TOOL_NAMES }, ...(route ? { agentOptions: route } : {}), persona: role.prompt })
+        toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }, ...(route ? { agentOptions: route } : {}), persona: role.prompt })
       runs.add(run)
       if (!run.localAgent || run.localAgent.id !== run.id || run.localAgent.session.header.parentSession !== agent.id || run.localAgent.session.header.isSeeded !== false) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
-      childGrants.set(run.localAgent, { roleId: role.id, parent: agent, bound, taskId: args.task_id })
+      childGrants.set(run.localAgent, { role, roleId: role.id, parent: agent, bound, taskId: args.task_id, evidence, reservationBound: reservationBound.promise })
       // Commit observed ID immediately, before awaiting the result. Catalog label covers the preceding crash window.
       await ctx.sessionPersistence.flush()
       const beforeBind = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       begun = await bridge(agent, 'bind', { task_id: args.task_id, base_revision: beforeBind.state.revision, observation: JSON.stringify({ ...selected, child_id: run.id }) }, signal)
+      reservationBound.resolve()
       const result = await run.result
       await ctx.sessionPersistence.flush()
-      const observed = { ...selected, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
+      // The archived reservation already carries route, role digest and evidence handoff.
+      const observed = { workstream: selected.workstream, role: selected.role, handoff_sha256: selected.handoff_sha256, correlation: selected.correlation, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
       const beforeFinish = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       const ack = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
-      const value = { ...ack, child_id: run.id, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', output: result.output }
+      // Still-unresolved evidence returns with the child result, before the next completion decision.
+      const status = await bridge(agent, 'status', { task_id: args.task_id }, signal).catch(() => undefined)
+      const value = { ...ack, child_id: run.id, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', route: route ? { ...route } : 'inherit', role_sha256: selected.role_sha256,
+        ...(evidence ? { evidence_handoff_id: evidence.handoff_id, candidate: evidence.candidate } : {}),
+        evidence_continuity: status?.['Evidence Continuity'] ?? 'UNKNOWN', output: result.output }
       if (result.stopReason !== 'completed') throw new Error('THALIRIS_NATIVE_CHILD_FAILED: ' + JSON.stringify(value))
       return value
-    } finally { if (run) { if (run.localAgent) childGrants.delete(run.localAgent); await run.dispose(); runs.delete(run) } }
+    } finally { reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (run) { if (run.localAgent) childGrants.delete(run.localAgent); await run.dispose(); runs.delete(run) } }
   })
   register(TOOL_NAMES[3], 'Controller records the mechanical DONE state after judging product completion from the task contract and available evidence.', object({ ...identitySchema, decision: string }),
     (args, agent, signal) => bridge(agent, 'close', args, signal))
+  register(TOOL_NAMES[5], 'Bounded task status: routing mechanics, current records, authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments); page with evidence_offset.',
+    object({ task_id: string, evidence_offset: { type: 'integer' } }, ['task_id']), (args, agent, signal) => bridge(agent, 'status', args, signal))
+  register(TOOL_NAMES[6], 'Controller records dynamic task context: append facts, decisions, progress and open items as records (supersedes replaces earlier ones), sources, and the milestone. The adapter supplies producer and revision.',
+    object({ ...identitySchema, records: { type: 'array', items: recordSchema }, sources: { type: 'array', items: sourceSchema }, milestone: string }, Object.keys(identitySchema)),
+    (args, agent, signal) => bridge(agent, 'context', args, signal))
+  register(TOOL_NAMES[7], 'Controller registers opaque user requirements ({id, workchain_ref}) for evidence continuity. Handoffs are registered by the adapter at dispatch.',
+    object({ ...identitySchema, requirements: { type: 'array', items: object({ id: string, workchain_ref: string }) } }), (args, agent, signal) => bridge(agent, 'register', args, signal))
+  register(TOOL_NAMES[8], 'Controller records one requirement judgment for a candidate with exact observation refs, outcome and reasoning; optional judgment_refs address an earlier repair/unknown basis.',
+    object({ ...identitySchema, judgment: judgmentSchema }), (args, agent, signal) => bridge(agent, 'judge', args, signal))
+  register(TOOL_NAMES[9], 'Switch execution mode only on an actual human instruction, with the expected authority digest from inspect/status; resolve active work first. Goal, boundary, invariants and acceptance stay frozen; child roles and grants are not widened.',
+    object({ ...identitySchema, expected_authority_sha256: string, mode: { type: 'string', enum: ['delegated', 'controller-direct', 'single-agent'] }, human_instruction: string }),
+    (args, agent, signal) => bridge(agent, 'mode', args, signal))
+  register(EVIDENCE_TOOLS[0], 'Record one already discovered local fact that changes your conclusion, local acceptance or a critical UNKNOWN, with source refs. The adapter binds task, handoff, candidate and requirement refs; do not supply them.',
+    object({ id: string, text: string, source_refs: strings, sources: { type: 'array', items: sourceSchema }, observed_state: string }, ['id', 'text', 'source_refs']), async (args, agent, signal) => {
+      const grant = childGrants.get(agent)
+      if (!grant) throw new Error('THALIRIS_CHILD_DISPATCH_REQUIRED')
+      if (!grant.evidence) throw new Error('THALIRIS_OBSERVATION_ASSOCIATION_UNAVAILABLE: report the observation and its sources in FINAL')
+      await grant.reservationBound
+      return bridge(grant.parent, 'observe', { task_id: grant.taskId, handoff_id: grant.evidence.handoff_id, child_id: agent.id, observation: args }, signal)
+    }, true)
 
   async function nativeObservation(agent, reservation, signal, cancel) {
     const own = agent.session.snapshotEvents().filter(event => event.type === 'subagent/catalog' && event.data.label === reservation.correlation)
@@ -232,13 +309,16 @@ export function apply(ctx, config) {
   }
   register(TOOL_NAMES[4], 'Check/reconcile a crash reservation using native catalog and durable terminal Session evidence. UNKNOWN never auto releases.',
     object({ ...identitySchema, action: { type: 'string', enum: ['check', 'reconcile', 'cancel-reconcile'] } }), async (args, agent, signal) => {
-      return await reconcile(agent, args, signal)
+      const result = await reconcile(agent, args, signal)
+      if (result.released) await bridge(agent, 'inspect', { task_id: args.task_id }, signal).catch(() => {})
+      return result
     })
 
   async function memory(args, agent, signal, operation) {
     const policy = readPolicy(config), grant = childGrants.get(agent), parent = grant?.parent ?? agent
     if (operation === 'write' && grant && args.task_id !== grant.taskId) throw new Error('THALIRIS_TASK_ID_CONFLICT')
-    const role = grant && selectedRole(policy, grant.roleId)
+    // A child keeps the role bound at its dispatch.
+    const role = grant?.role
     if (grant && (!role.context.memory || !role.tools.includes(operation === 'read' ? MEMORY_TOOLS[0] : operation === 'search' ? MEMORY_TOOLS[1] : MEMORY_TOOLS[2]))) throw new Error('THALIRIS_MEMORY_PERMISSION_DENIED')
     const permission = operation === 'write' ? 'write' : 'read'
     const allowed = grant ? role.memory[permission] : policy.memory[permission === 'write' ? 'controllerWrite' : 'controllerRead']
@@ -289,6 +369,6 @@ export function apply(ctx, config) {
     for (const cancellation of cancellations) cancellation.abort('Thaliris plugin unloaded')
     await Promise.allSettled([...runs].map(run => run.dispose()))
     await Promise.allSettled([...operations])
-    runs.clear(); cancellations.clear()
+    runs.clear(); cancellations.clear(); taskContexts.clear()
   })
 }

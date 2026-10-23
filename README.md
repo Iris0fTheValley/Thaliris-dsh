@@ -37,6 +37,8 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 | Implementer | 实现已确定的方向并完成验证 |
 | Focused Implementer | 处理设计与实现高度耦合的问题，直到核心语义收敛 |
 | Reviewer | 可选的独立只读挑战，用证据检验候选方案 |
+| Reasoning Specialist | 当问题框架或决策依据可能改变方向时独立挑战它；不实现、不做大范围事实收集 |
+| Curator | 在保留来源的前提下整理选定的可复用知识 |
 
 角色按需选用，不是固定流水线。单 Agent、Controller 直接执行或委派都合法。不同角色可以配不同能力的模型：强模型只放在真正需要它的关键节点上。
 
@@ -191,7 +193,21 @@ thaliris-core --root . --task-id "$TASK_ID" task-status
 
 @thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core；本仓库不复制 Core 或 Codex adapter。
 
-DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板采用 inherit 路由且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
+DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不授予工具且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
+
+原生 root Controller 获得以下工具，子代理永远看不到它们：
+
+| 工具 | 用途 |
+| --- | --- |
+| `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | 确立选定意图、查看显式选定的任务、在 Controller 自行判断后记录机械 DONE |
+| `thaliris_workstream` | 以角色、有界 handoff、可选模型路由与 reasoning effort、可选 evidence association 派发一个全新子代理；reservation 记录所选路由和派发时角色的摘要 |
+| `thaliris_reconcile` | 依据原生终止证据检查或调和崩溃遗留的 reservation；UNKNOWN 不会自动释放 |
+| `thaliris_task_status` | 有界状态：当前记录、authority 摘要与模式、evidence continuity（未纳入的 observation、未解决的 judgment） |
+| `thaliris_task_context` | 记录事实、决策、进展、待办与 milestone；压缩或恢复后，有界摘要会作为 DSH dynamic context 重新提供 |
+| `thaliris_task_register` / `thaliris_task_judge` | 登记不透明的需求；以精确的 observation 引用记录需求判断 |
+| `thaliris_task_mode` | 在真实的人类指令下切换 execution mode，使用 revision 与 authority 摘要 CAS，且需先解决进行中的工作 |
+
+带 evidence association 派发的子代理会额外获得 `thaliris_observe`；adapter 把每条 observation 绑定到该次派发的 handoff、candidate、requirement refs 以及已绑定的原生子代理，派发结束即失去该授权。Controller 不能代写子代理的 observation，子代理也不能登记、判断或切换模式。已派发的子代理在 Settings 之后变更时仍保持派发时绑定的角色（提示词、工具、memory 授权）。模式切换不会扩大子代理的角色或授权；delegated 派发要求 delegated 模式。
 
 Memory 是独立可选能力，默认关闭。可单独安装 memory capability 和本地文本 provider；task routing 和 close 无需启用 Memory 或 client UI。没有 embeddings/vector RAG 或自动检索；Memory 读取受授权控制，写入遵循用户许可和 Core task 检查。详细边界见[能力说明](CAPABILITIES.md)和[客户端契约](CLIENT-CONTRACT.md)。
 

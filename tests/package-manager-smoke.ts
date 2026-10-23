@@ -105,7 +105,7 @@ try {
     ctx.provide('appReady', { onReady: (listener: () => void) => { listener(); return () => {} } })
     ctx.provide('profileContext', profile as never)
     ctx.provide('agents', { get: (id: string) => id === rootAgent?.id ? rootAgent : undefined, roots: () => rootAgent ? [rootAgent] : [] })
-    ctx.provide('systemPrompt', { getSectionOrder: () => 0, section: () => {} })
+    ctx.provide('systemPrompt', { getSectionOrder: () => 0, section: () => {}, getContextOrder: () => 0, context: () => {} })
     ctx.provide('tools', {
       register: (tool: any) => { tools.set(tool.name, tool) },
       schemas: () => [...tools.values()].map(({ name, description }) => ({ name, description })),
@@ -195,8 +195,9 @@ try {
   stage = 'activate API and optional memory'
   assert.ok(owner.get('thaliris'), 'enabling the packed runtime must provide its native Host service')
   assert.deepEqual([...tools.keys()].sort(), [
-    'thaliris_memory_propose', 'thaliris_memory_read', 'thaliris_memory_search', 'thaliris_reconcile',
-    'thaliris_task_close', 'thaliris_task_inspect', 'thaliris_task_start', 'thaliris_workstream',
+    'thaliris_memory_propose', 'thaliris_memory_read', 'thaliris_memory_search', 'thaliris_observe', 'thaliris_reconcile',
+    'thaliris_task_close', 'thaliris_task_context', 'thaliris_task_inspect', 'thaliris_task_judge', 'thaliris_task_mode',
+    'thaliris_task_register', 'thaliris_task_start', 'thaliris_task_status', 'thaliris_workstream',
   ])
 
   await setPluginEnabled('@thaliris/dsh-plugin/api', true)

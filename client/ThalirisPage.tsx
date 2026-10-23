@@ -245,11 +245,11 @@ export function ThalirisPage(props: Props) {
                         if (!checked) editRole(index, { tools: role.tools.filter(value => value !== name) })
                       }} />)}</> :
                     <div className={css.checkGrid}>{[...new Set([
-                      ...native.tools.filter(tool => !tool.name.startsWith('thaliris_task_') && tool.name !== 'thaliris_reconcile' && tool.name !== 'thaliris_workstream').map(tool => tool.name),
+                      ...native.tools.filter(tool => !tool.name.startsWith('thaliris_task_') && tool.name !== 'thaliris_reconcile' && tool.name !== 'thaliris_workstream' && tool.name !== 'thaliris_observe').map(tool => tool.name),
                       ...role.tools,
                     ])].map(name => {
                       const tool = native.tools.find(item => item.name === name)
-                      const reserved = name.startsWith('thaliris_task_') || name === 'thaliris_reconcile' || name === 'thaliris_workstream'
+                      const reserved = name.startsWith('thaliris_task_') || name === 'thaliris_reconcile' || name === 'thaliris_workstream' || name === 'thaliris_observe'
                       return <Checkbox key={name} checked={role.tools.includes(name)} disabled={reserved && !role.tools.includes(name)}
                         label={`${name}${tool?.description ? ` — ${tool.description}` : ` — ${t('toolUnavailable')}`}`} onChange={checked => {
                           const tools = role.tools.filter(value => value !== name)

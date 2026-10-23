@@ -21,6 +21,7 @@ import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { assembleContextFor } from '@deepseek-ai/dsh-agent'
 import * as Plugin from '../index.mjs'
 import Api from '../api.mjs'
 import { remoteContribution } from '../remote.mjs'
@@ -270,6 +271,16 @@ async function restart(home: string) {
   } finally { await unloaded.ctx.fiber.dispose() }
   const h = await harness(home, false)
   try {
+    // Before any Thaliris tool call, the resumed root's dynamic context is
+    // restored from the Core task anchored to this exact native root.
+    const taskContext = async () => (await h.ctx.systemPrompt.assemble(assembleContextFor(h.parent!, signal()))).contexts.find(item => item.name === 'thaliris:task-context')?.text ?? ''
+    let restored = await taskContext()
+    for (let attempt = 0; !restored && attempt < 100; attempt++) { await new Promise(resolve => setTimeout(resolve, 100)); restored = await taskContext() }
+    assert.match(restored, new RegExp(`Thaliris task ${taskId} context`), 'restart restores the bounded Controller task context')
+    const rivalContext = await h.ctx.agentLoop.create(SessionId('context-rival'), { provider: 'mock', model: 'parent' }, { cwd: h.workspace })
+    await h.ctx.systemPrompt.assemble(assembleContextFor(rivalContext, signal()))
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    assert.doesNotMatch((await h.ctx.systemPrompt.assemble(assembleContextFor(rivalContext, signal()))).contexts.map(item => item.text).join('\n'), new RegExp(taskId), 'another root does not receive this task context')
     assert.deepEqual((h.view().value as any).policy.roles, [], 'deleted roles stay deleted after fresh process')
     assert.equal((h.view().value as any).policy.controllerPrompt, 'VISIBLE_EDITED_CONTROLLER')
     const task = await h.inspect(taskId)

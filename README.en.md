@@ -37,6 +37,8 @@ A long-lived **Controller** retains the user goal, hard constraints and acceptan
 | Implementer | Implement an accepted direction and verify it |
 | Focused Implementer | Handle tightly coupled design and implementation until the core semantics converge |
 | Reviewer | Optionally challenge a candidate independently and read-only |
+| Reasoning Specialist | Independently challenge a framing or decision basis when that could change direction; no implementation or broad fact gathering |
+| Curator | Reconcile selected reusable knowledge with provenance |
 
 Roles are selected as needed, not used as a fixed pipeline. Single-Agent work, direct Controller execution and delegation are all valid. Different roles can use models with different capabilities, keeping stronger models at decision-critical points.
 
@@ -191,7 +193,21 @@ Removing Thaliris should not make the underlying development process incorrect.
 
 @thaliris/dsh-plugin adds Thaliris task records and Controller tools to DeepSeek Harness. It uses native DSH Workspaces, persistent Sessions, Agents/subagents, Settings, the model catalog, Plugin Manager and lifecycle. A Python bridge calls the separately installed Thaliris Core; this repository does not include copies of Core or the Codex Adapter.
 
-The DSH policy page configures role prompts, model routes, tools, Workspaces and Memory. Initial role templates use inherit routing and do not fix a model; route modes are inherit, fixed and allowed. Template changes do not overwrite saved user role records. An exact Workspace binding and persistent root Session are part of task association; a repository path alone does not resume an old task.
+The DSH policy page configures role prompts, model routes, tools, Workspaces and Memory. Initial role templates (Investigator, Implementer, Focused Implementer, Reviewer, Curator, Reasoning Specialist) use inherit routing, grant no tools and do not fix a model; route modes are inherit, fixed and allowed. Template changes do not overwrite saved user role records; roles are adjusted by editing these user-owned records, not by the Controller. An exact Workspace binding and persistent root Session are part of task association; a repository path alone does not resume an old task.
+
+The native root Controller gets these tools; children never see them:
+
+| Tool | Purpose |
+| --- | --- |
+| `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | Establish selected intent, inspect the explicitly selected task, record mechanical DONE after the Controller's own judgment |
+| `thaliris_workstream` | Dispatch one fresh child with a role, bounded handoff, optional model route and reasoning effort, and optional evidence association; the reservation records the route and a digest of the role as bound at dispatch |
+| `thaliris_reconcile` | Check or reconcile a crash reservation from native terminal evidence; UNKNOWN never auto-releases |
+| `thaliris_task_status` | Bounded status with current records, authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments) |
+| `thaliris_task_context` | Record facts, decisions, progress, open items and the milestone; a bounded summary returns as DSH dynamic context after compaction or resume |
+| `thaliris_task_register` / `thaliris_task_judge` | Register opaque requirements; record requirement judgments with exact observation refs |
+| `thaliris_task_mode` | Switch execution mode on an actual human instruction with revision and authority-digest CAS, after active work is resolved |
+
+A child dispatched with an evidence association additionally receives `thaliris_observe`; the adapter binds each observation to that dispatch's handoff, candidate and requirement refs and to the bound native child, and the grant ends with the dispatch. The Controller cannot author child observations, and children cannot register, judge or switch modes. A dispatched child keeps the role (prompt, tools, memory grants) bound at dispatch even if Settings change later. Mode switches never widen a child's role or grants; delegated dispatch requires delegated mode.
 
 Memory is an independent optional capability and is disabled by default. The memory capability and local text provider can be installed separately; task routing and close work without Memory or the client UI. There are no embeddings/vector RAG or automatic retrieval. Memory reads follow grants, and writes follow user policy and Core task checks. See [capabilities](CAPABILITIES.md) and the [client contract](CLIENT-CONTRACT.md).
 

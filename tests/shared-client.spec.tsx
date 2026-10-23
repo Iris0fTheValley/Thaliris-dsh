@@ -102,7 +102,7 @@ function nativeState(): NativeProjectionState {
   return {
     modelCatalog, modelStatus: 'ready' as const,
     providers: [{ id: 'provider-one', name: 'Provider One' }], providerStatus: 'ready' as const,
-    tools: [{ name: 'read_file', description: 'Read one file' }, { name: 'thaliris_task_close', description: 'Reserved' }], toolStatus: 'ready' as const,
+    tools: [{ name: 'read_file', description: 'Read one file' }, { name: 'thaliris_task_close', description: 'Reserved' }, { name: 'thaliris_observe', description: 'Dispatch-granted' }], toolStatus: 'ready' as const,
     templates: [role('reviewer')], templateStatus: 'ready' as const,
     sessions, workspaces, diagnosticSessionId: 'root-session', diagnostics, diagnosticStatus: 'ready' as const,
     diagnosticError: undefined, approvalStatus: 'idle', approvalReceipt: undefined, approvalError: undefined,
@@ -187,6 +187,7 @@ describe('shared Thaliris settings client', () => {
     expect(editor.getSnapshot().draft?.roles[1]?.modelPolicy.routes).toEqual([{ provider: 'alpha', model: 'fast', reasoningEffort: 'high' }])
     fireEvent.click(screen.getByRole('checkbox', { name: 'Beta / Accurate (Native default)' }))
     fireEvent.click(screen.getAllByRole('checkbox', { name: 'read_file — Read one file' })[1]!)
+    expect(screen.queryAllByRole('checkbox', { name: /thaliris_task_close|thaliris_observe/ })).toEqual([])
     fireEvent.click(screen.getAllByRole('button', { name: en.duplicateRole })[1]!)
     roleIds = screen.getAllByLabelText(en.roleId) as HTMLInputElement[]
     expect(roleIds[2]!.value).toBe('custom-writer-copy')
