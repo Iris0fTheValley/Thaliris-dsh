@@ -147,8 +147,8 @@ jobs:
         if: ${{ !cancelled() }}
         id: pack
         run: |
-          # --copies: the plugin realpath()s the interpreter, so a symlinked venv would lose the wheel
-          python -m venv --copies "$RUNNER_TEMP/core-venv"
+          # Ordinary (symlinked) venv, as users create it; the smoke asserts the symlink.
+          python -m venv "$RUNNER_TEMP/core-venv"
           "$RUNNER_TEMP/core-venv/bin/python" -m pip install ./shared-core
           echo "core=$("$RUNNER_TEMP/core-venv/bin/python" -I -c 'import pathlib, thaliris; print(pathlib.Path(thaliris.__file__).parent)')" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/pack" "$RUNNER_TEMP/smoke"

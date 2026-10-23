@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { boot, createRuntimeResolution, initProfile, PluginPackages, readProfilePatches, readProfileManifest, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
@@ -25,6 +25,16 @@ const separator = pythonCore.indexOf('|')
 const [pythonMajor, pythonMinor] = pythonCore.slice(0, separator).split('.').map(Number)
 assert.ok(separator > 0 && (pythonMajor > 3 || pythonMajor === 3 && pythonMinor >= 11), 'installed Core wheel smoke requires Python 3.11 or newer')
 assert.equal(resolve(pythonCore.slice(separator + 1)), resolve(corePath, '__init__.py'), 'runtime Python must import the installed Core wheel, not the source checkout')
+// Regression: an ordinary POSIX venv's bin/python is a symlink to the base
+// interpreter, which cannot see the venv's site-packages. The plugin must launch
+// the bridge through the configured venv path, not the resolved base interpreter.
+if (process.platform === 'win32') {
+  console.log('SKIP symlinked-venv precondition: Windows venvs copy python.exe, so there is no symlink to resolve')
+} else {
+  assert.ok(lstatSync(pythonExecutable).isSymbolicLink(), 'THALIRIS_TEST_PYTHON must be an ordinary (symlinked) venv interpreter, not a --copies venv')
+  const baseImport = spawnSync(realpathSync(pythonExecutable), ['-I', '-c', 'import thaliris'], { encoding: 'utf8' })
+  assert.notEqual(baseImport.status, 0, 'the resolved base interpreter must not import Core, or this smoke cannot detect a lost venv')
+}
 
 mkdirSync(temporaryRoot, { recursive: true })
 const home = mkdtempSync(join(temporaryRoot, 'thaliris-local-bundle-profile-'))

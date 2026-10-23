@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { readPolicy, selectedRole } from './policy.mjs'
@@ -39,7 +39,17 @@ export function apply(ctx, config) {
     if (typeof config[key] !== 'string' || !isAbsolute(config[key])) throw new Error(`THALIRIS_ABSOLUTE_CONFIG_REQUIRED: ${key}`)
   }
   readPolicy(config)
-  const python = realpathSync(config.pythonExecutable), corePath = realpathSync(config.corePath)
+  // The interpreter is pinned at activation: its fully resolved file is the identity
+  // every bridge launch must still reach. Launch it through the configured name with
+  // only parent directories resolved, because a POSIX venv's bin/python is a symlink
+  // and CPython locates pyvenv.cfg (and so the venv site-packages holding Core) from
+  // the path it was started as; starting the resolved base interpreter loses the venv.
+  const pythonIdentity = realpathSync(config.pythonExecutable), corePath = realpathSync(config.corePath)
+  const python = join(realpathSync(dirname(config.pythonExecutable)), basename(config.pythonExecutable))
+  function pinnedPython() {
+    if (realpathSync(python) !== pythonIdentity) throw new Error('THALIRIS_PYTHON_IDENTITY_CHANGED')
+    return python
+  }
   let disposed = false, tail = Promise.resolve(), bridgeTail = Promise.resolve()
   const cancellations = new Set(), operations = new Set(), runs = new Set(), childGrants = new WeakMap()
   // Bounded Controller task context per native root, re-supplied as DSH dynamic
@@ -173,7 +183,7 @@ export function apply(ctx, config) {
     const processSignal = AbortSignal.any([signal, deadline.signal])
     let command
     try {
-      command = ctx.subprocess.spawn({ argv: [python, '-I', bridgePath], cwd: bound.root, graceMs: 1000, signal: processSignal,
+      command = ctx.subprocess.spawn({ argv: [pinnedPython(), '-I', bridgePath], cwd: bound.root, graceMs: 1000, signal: processSignal,
         stdio: { stdin: { data: JSON.stringify({ protocol: 1, core_path: corePath, root: bound.root, authority_directory: config.authorityDirectory,
           native_controller_id: agent.id, native_workspace_id: bound.workspaceId, operation, arguments: args }) }, stdout: { maxBytes: 1048576 }, stderr: { maxBytes: 8192 } } })
       const outcome = await command.done, stdout = command.collected.stdout.readFrom(0)
