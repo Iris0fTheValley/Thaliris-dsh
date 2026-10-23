@@ -202,7 +202,7 @@ The native root Controller gets these tools; children never see them:
 | `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | Establish selected intent, inspect the explicitly selected task, record mechanical DONE after the Controller's own judgment |
 | `thaliris_workstream` | Dispatch one fresh child with a role, bounded handoff, optional model route and reasoning effort, and optional evidence association; the reservation records the route and a digest of the role as bound at dispatch |
 | `thaliris_reconcile` | Check or reconcile a crash reservation from native terminal evidence; UNKNOWN never auto-releases |
-| `thaliris_task_status` | Bounded status with current records, authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments) |
+| `thaliris_task_status` | Bounded status with current records, dispatch history (finished dispatches are append-only `dsh-dispatch` Core records, not routing state), authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments) |
 | `thaliris_task_context` | Record facts, decisions, progress, open items and the milestone; a bounded summary returns as DSH dynamic context after compaction or resume |
 | `thaliris_task_register` / `thaliris_task_judge` | Register opaque requirements; record requirement judgments with exact observation refs |
 | `thaliris_task_mode` | Switch execution mode on an actual human instruction with revision and authority-digest CAS, after active work is resolved |

@@ -19,7 +19,22 @@ OBSERVATION_FIELDS = {"id", "text", "source_refs", "sources", "observed_state"}
 SOURCE_FIELDS = {"id", "kind", "locator", "summary"}
 RECORD_FIELDS = {"id", "kind", "text", "source_refs", "status", "supersedes"}
 JUDGMENT_FIELDS = {"id", "candidate", "requirement_ref", "observation_refs", "outcome", "reasoning", "judgment_refs"}
-CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "close", "context", "register", "judge", "observe", "mode"}
+CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"}
+# Active Work and Pending Results hold only current routing state (Core bounds
+# them to 8 KiB together). Finished dispatches, consumed memory proposals and
+# legacy history move to append-only Core records with adapter provenance.
+ADAPTER_PRODUCER = "dsh:adapter"
+DISPATCH_KIND = "dsh-dispatch"
+LEGACY_KIND = "dsh-legacy-pending"
+APPROVAL_KIND = "dsh-memory-approval"
+CLOSE_KIND = "dsh-close-decision"
+ADAPTER_KINDS = frozenset({DISPATCH_KIND, LEGACY_KIND, APPROVAL_KIND})
+RECORD_TEXT_MAX = 16384
+TERMINAL_PROVENANCE = frozenset({"native-run-result", "native-session-turn/end"})
+ARCHIVE_PREFIX = "Archived reservation: "
+LEGACY_PREFIXES = (ARCHIVE_PREFIX, "Controller close decision: ")
+# Core's record-count and state-size bounds; any other refusal stays an error.
+CORE_CAPACITY_ERRORS = frozenset({"state list exceeds limit", "invalid task records", "task state exceeds 512 KiB"})
 
 
 def validate_authority_directory(root: Path, directory: Path) -> None:
@@ -111,7 +126,7 @@ def dispatch(request: dict) -> dict:
             raise ValueError("INVALID_STATUS_ARGUMENTS")
         packet = core.task_status(root, offset)
         records, total = current_records(state)
-        return {**packet, "Current Records": records, "Current Record Count": total,
+        return {**packet, "Current Records": records, "Current Record Count": total, "Dispatch History": dispatch_history(state),
                 "Authority": {"status": record["status"], "execution_mode": record["contract"]["execution_mode"], "sha256": authority_digest(store)},
                 "task_context": task_context_text(core, state)}
     if operation == "observe":
@@ -123,7 +138,15 @@ def dispatch(request: dict) -> dict:
     if operation == "proposal":
         if set(args) != {"task_id", "observation"} or not isinstance(args["observation"], str) or len(args["observation"]) > 3500:
             raise ValueError("INVALID_MEMORY_PROPOSAL")
-        result = update(core, root, native_id, state["revision"], {"pending_results": [*state["pending_results"], args["observation"]]})
+        proposal = parse_json(args["observation"])
+        if not isinstance(proposal, dict) or not isinstance(proposal.get("proposal_id"), str) or "approval_id" in proposal:
+            raise ValueError("INVALID_MEMORY_PROPOSAL")
+        # An unapproved proposal is a pending result the Controller has not consumed.
+        result = write(core, root, native_id, state, {"pending_results": [*state["pending_results"], args["observation"]]})
+        store.checkpoint()
+        return result
+    if operation == "approval":
+        result = approval(core, root, native_id, state, args)
         store.checkpoint()
         return result
     if args.get("task_id") != state["task_id"] or type(args.get("base_revision")) is not int or args["base_revision"] != state["revision"]:
@@ -145,8 +168,8 @@ def dispatch(request: dict) -> dict:
             raise ValueError("CONTROLLER_DECISION_REQUIRED")
         if state["active_work"]:
             raise ValueError("UNRESOLVED_ACTIVE_WORK_CANNOT_CLOSE")
-        # Preserve the explicit model decision as a pending-result observation.
-        result = update(core, root, native_id, state["revision"], {"active_work": [], "pending_results": [*state["pending_results"], "Controller close decision: " + args["decision"]]})
+        # Preserve the explicit model decision as an append-only Controller record.
+        result = write(core, root, native_id, state, {"active_work": []}, [(CLOSE_KIND, "Controller close decision: " + args["decision"], CONTROLLER_PRODUCER)])
         store.checkpoint()
         result = core.task_close(root, result["revision"], expected_task_id=args["task_id"])
         store.checkpoint()
@@ -174,9 +197,13 @@ def dispatch(request: dict) -> dict:
             raise ValueError("NATIVE_CHILD_CONFLICT")
         if operation == "reconcile" and (observed.get("outcome") not in {"completed", "aborted", "error", "max-tokens", "blocked", "interrupted"} or observed.get("provenance") != "native-session-turn/end"):
             raise ValueError("NATIVE_TERMINAL_EVIDENCE_REQUIRED")
-    partial = {"active_work": [args["observation"]]} if operation in {"begin", "bind"} else {
-        "active_work": [], "pending_results": [*state["pending_results"], "Archived reservation: " + state["active_work"][0], args["observation"]]}
-    result = update(core, root, native_id, state["revision"], partial)
+    if operation in {"begin", "bind"}:
+        result = write(core, root, native_id, state, {"active_work": [args["observation"]]})
+    else:
+        # The released reservation and its terminal observation become one
+        # append-only dispatch record; routing state keeps no history.
+        archive = {"operation": operation, "reservation": parse_json(state["active_work"][0], raw=True), "result": parse_json(args["observation"], raw=True)}
+        result = write(core, root, native_id, state, {"active_work": []}, [(DISPATCH_KIND, compact(archive), ADAPTER_PRODUCER)])
     store.checkpoint()
     return result
 
@@ -215,10 +242,135 @@ def resume(core, AuthorityStore, root: Path, authority_directory: Path, native_i
     return {"ok": True, "tasks": tasks[:4], "task_count": len(tasks), "unreadable_count": unreadable}
 
 
+def parse_json(value: str, raw: bool = False):
+    """Parse adapter JSON; on failure return the raw string (raw=True) or None."""
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value if raw else None
+
+
+def compact(value) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def is_adapter_record(item: dict, kinds=ADAPTER_KINDS) -> bool:
+    return item.get("producer") == ADAPTER_PRODUCER and item.get("kind") in kinds
+
+
+def split_pending(values: list[str]) -> tuple[list[str], list[str]]:
+    """Separate current pending results from history earlier versions kept there.
+
+    Legacy history is archived reservations, terminal dispatch observations,
+    close decisions, approval receipts and the proposals those receipts
+    consumed. Unapproved proposals and unrecognized entries stay, unchanged.
+    """
+    parsed = [parse_json(value) for value in values]
+    approved = {item["proposal_id"] for item in parsed if isinstance(item, dict) and isinstance(item.get("approval_id"), str) and isinstance(item.get("proposal_id"), str)}
+    current, legacy = [], []
+    for value, item in zip(values, parsed):
+        historical = value.startswith(LEGACY_PREFIXES) or isinstance(item, dict) and (
+            isinstance(item.get("approval_id"), str) or item.get("provenance") in TERMINAL_PROVENANCE
+            or isinstance(item.get("proposal_id"), str) and item["proposal_id"] in approved)
+        (legacy if historical else current).append(value)
+    return current, legacy
+
+
+def bounded_text(text: str) -> str:
+    if len(text) <= RECORD_TEXT_MAX:
+        return text
+    # Adapter-built texts stay well below the bound (their inputs are bounded);
+    # this keeps a record from ever failing a release or close on size.
+    return compact({"truncated": True, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "prefix": text[:RECORD_TEXT_MAX // 2]})
+
+
+def write(core, root: Path, actor: str, state: dict, partial: dict, additions: list[tuple[str, str, str]] = ()) -> dict:
+    """One CAS update: routing change, adapter-supplied records, legacy migration.
+
+    Legacy history found in Pending Results moves into one bounded record on
+    this write. Record producer and revision are supplied here, never by the
+    caller. If Core's record-count or state-size bound refuses the records,
+    the routing change is applied alone and the unrecorded text is returned,
+    so history volume never blocks a release or close.
+    """
+    current, legacy = split_pending(partial.get("pending_results", state["pending_results"]))
+    taken = core._task_object_ids(state) | {item.get("id") for item in partial.get("records", []) if isinstance(item, dict)}
+    revision = state["revision"] + 1
+
+    def record(kind: str, text: str, producer: str) -> dict:
+        base = f"{kind}.r{revision}"
+        identifier, suffix = base, 1
+        while identifier in taken:
+            suffix += 1
+            identifier = f"{base}.{suffix}"
+        taken.add(identifier)
+        return {"id": identifier, "kind": kind, "text": bounded_text(text), "producer": producer, "revision": revision}
+
+    built = [record(LEGACY_KIND, json.dumps({"migrated_from": "pending_results", "entries": legacy}, ensure_ascii=False), ADAPTER_PRODUCER)] if legacy else []
+    built += [record(kind, text, producer) for kind, text, producer in additions]
+    full = {**partial, **({"pending_results": current} if legacy else {})}
+    if built:
+        full["records"] = [*partial.get("records", []), *built]
+    try:
+        result = update(core, root, actor, state["revision"], full)
+    except ValueError as error:
+        if not built or str(error) not in CORE_CAPACITY_ERRORS:
+            raise
+        result = update(core, root, actor, state["revision"], partial)
+        return {**result, "adapter_records": [], "unrecorded_reason": "CORE_RECORD_CAPACITY: " + str(error),
+                "unrecorded": [{"kind": item["kind"], "text": item["text"]} for item in built if item["kind"] != LEGACY_KIND]}
+    return {**result, "adapter_records": [item["id"] for item in built]}
+
+
+def approval(core, root: Path, native_id: str, state: dict, args: dict) -> dict:
+    """Consume one proposal: drop it from Pending Results and record the receipt."""
+    if set(args) != {"task_id", "observation"} or not isinstance(args["observation"], str) or len(args["observation"]) > 3500:
+        raise ValueError("INVALID_MEMORY_APPROVAL")
+    receipt = parse_json(args["observation"])
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("approval_id"), str) or not isinstance(receipt.get("proposal_id"), str):
+        raise ValueError("INVALID_MEMORY_APPROVAL")
+    remaining, consumed = [], None
+    for value in state["pending_results"]:
+        item = parse_json(value)
+        if consumed is None and isinstance(item, dict) and item.get("proposal_id") == receipt["proposal_id"] and "approval_id" not in item:
+            consumed = item
+        else:
+            remaining.append(value)
+    # The provider write already happened; its receipt is recorded even when
+    # the proposal is no longer pending.
+    text = compact({"receipt": receipt, "proposal": consumed})
+    return write(core, root, native_id, state, {"pending_results": remaining}, [(APPROVAL_KIND, text, ADAPTER_PRODUCER)])
+
+
+def dispatch_history(state: dict, limit: int = 8) -> dict:
+    """Bounded projection of finished dispatches archived as adapter records."""
+    archives = [item for item in state["records"] if is_adapter_record(item, {DISPATCH_KIND})]
+    migrated = [entry for item in state["records"] if is_adapter_record(item, {LEGACY_KIND})
+                for entry in ((parse_json(item["text"]) or {}).get("entries") or []) if isinstance(entry, str)]
+    legacy = sum(entry.startswith(ARCHIVE_PREFIX) for entry in [*migrated, *state["pending_results"]])
+
+    def summary(item: dict) -> dict:
+        archive = parse_json(item["text"])
+        archive = archive if isinstance(archive, dict) else {}
+        reservation = archive.get("reservation") if isinstance(archive.get("reservation"), dict) else {}
+        result = archive.get("result") if isinstance(archive.get("result"), dict) else {}
+        return {"id": item["id"], "revision": item["revision"], "operation": archive.get("operation"),
+                **{key: reservation[key] for key in ("workstream", "role", "route", "evidence_handoff_id") if key in reservation},
+                "child_id": result.get("child_id", reservation.get("child_id")), "outcome": result.get("stop_reason", result.get("outcome"))}
+
+    return {"record_kind": DISPATCH_KIND, "count": len(archives), "legacy_count": legacy,
+            "recent": [summary(item) for item in archives[-limit:]] if limit else []}
+
+
 def current_records(state: dict, limit: int = 12, text_chars: int = 600) -> tuple[list[dict], int]:
-    """The most recent records no later record supersedes (bounded), and their total count."""
+    """The most recent Controller-facing records no later record supersedes (bounded), and their total count.
+
+    Adapter history records (dispatch archives, memory receipts, legacy
+    migration) are projected by dispatch_history instead, so they never
+    crowd Controller decisions out of the bounded task context.
+    """
     superseded = {ref for item in state["records"] for ref in item.get("supersedes", [])}
-    current = [item for item in state["records"] if item["id"] not in superseded]
+    current = [item for item in state["records"] if item["id"] not in superseded and not is_adapter_record(item)]
     shown = [{"id": item["id"], "kind": item["kind"], "status": item["status"], "revision": item["revision"],
               "text": item["text"][:text_chars], "truncated": len(item["text"]) > text_chars,
               **({"supersedes": item["supersedes"]} if item.get("supersedes") else {})} for item in current[-limit:]]
@@ -247,6 +399,10 @@ def task_context_text(core, state: dict, budget: int = 6000) -> str | None:
     if records:
         lines.append(f"- Current records ({len(records)} most recent of {total} not superseded):")
         lines += [f"  - {item['id']} [{item['kind']}] {item['text']}{' ...' if item['truncated'] else ''}" for item in records]
+    history = dispatch_history(state, limit=0)
+    if history["count"] or history["legacy_count"]:
+        legacy = f" (+{history['legacy_count']} legacy)" if history["legacy_count"] else ""
+        lines.append(f"- Dispatch history: {history['count']} finished dispatch(es){legacy} archived as {DISPATCH_KIND} records; read thaliris_task_status.")
     if continuity["unincorporated_total"] or continuity["unresolved_judgments_total"]:
         lines.append(f"- Evidence continuity: {continuity['unincorporated_total']} unincorporated observation link(s), "
                      f"{continuity['unresolved_judgments_total']} unresolved judgment(s); read thaliris_task_status.")
@@ -258,7 +414,8 @@ def task_context_update(core, root: Path, store, state: dict, args: dict) -> dic
     """Controller-recorded facts, decisions, progress, open items and milestone.
 
     Reservations and pending results stay adapter-owned; records are
-    append-only and the bridge supplies their producer and revision.
+    append-only and the bridge supplies their producer and revision. Legacy
+    history still in Pending Results is migrated on this write.
     """
     if set(args) - {"task_id", "base_revision", "records", "sources", "milestone"} or not set(args) & {"records", "sources", "milestone"}:
         raise ValueError("INVALID_TASK_CONTEXT_ARGUMENTS")
@@ -275,7 +432,7 @@ def task_context_update(core, root: Path, store, state: dict, args: dict) -> dic
         if not isinstance(args["milestone"], str) or len(args["milestone"]) > 128:
             raise ValueError("INVALID_TASK_CONTEXT_MILESTONE")
         partial["current_milestone"] = args["milestone"] or None
-    result = update(core, root, CONTROLLER_PRODUCER, state["revision"], partial)
+    result = write(core, root, CONTROLLER_PRODUCER, state, partial)
     store.checkpoint()
     current = core.task_show(root)["state"]
     records, total = current_records(current)

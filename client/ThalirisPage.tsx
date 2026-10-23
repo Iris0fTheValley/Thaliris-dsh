@@ -407,7 +407,13 @@ function Diagnostics({ native, selectedSession, setSelectedSession, selectedTask
   }).map(record).filter((item: Record<string, any> | undefined) => item) as Record<string, any>[]
   const proposals = pendingResults.filter(item => typeof item.proposal_id === 'string' && typeof item.approval_id !== 'string'
     && typeof item.provider === 'string' && typeof item.key === 'string' && typeof item.text === 'string' && item.provenance !== undefined)
-  const approvalReceipts = pendingResults.filter(item => typeof item.approval_id === 'string' && typeof item.proposal_id === 'string')
+  // Receipts are `dsh-memory-approval` adapter records; tasks written before
+  // that may still carry them in pending results until their next write.
+  const recordedReceipts = (Array.isArray(taskState?.records) ? taskState.records : []).map(record)
+    .filter((item: Record<string, any> | undefined) => item?.kind === 'dsh-memory-approval' && item.producer === 'dsh:adapter' && typeof item.text === 'string')
+    .flatMap((item: Record<string, any>) => { try { return [record(JSON.parse(item.text))?.receipt] } catch { return [] } })
+    .map(record).filter((item: Record<string, any> | undefined) => item) as Record<string, any>[]
+  const approvalReceipts = [...pendingResults, ...recordedReceipts].filter(item => typeof item.approval_id === 'string' && typeof item.proposal_id === 'string')
   const reservations = Array.isArray(data?.reservations) ? data.reservations : []
   const approved = new Set(approvalReceipts.map(value => value.proposal_id))
   return <section className={css.section}>

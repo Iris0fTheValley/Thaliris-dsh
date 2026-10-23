@@ -194,6 +194,11 @@ async function initialize(home: string) {
     await assert.rejects(h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId: orphanTaskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
     assert.equal(writes, 0, 'a proposal from one task cannot be approved through another task ID')
     await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }); assert.equal(writes, 1)
+    const approvedState = (await h.inspect(taskId)).state
+    assert.ok(!approvedState.pending_results.some((value: string) => value.includes(proposed.value.proposal_id)), 'approval consumes the pending proposal')
+    assert.ok(approvedState.records.some((item: any) => item.kind === 'dsh-memory-approval' && item.producer === 'dsh:adapter' && JSON.parse(item.text).receipt.proposal_id === proposed.value.proposal_id), 'approval receipt is an adapter record')
+    await assert.rejects(h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
+    assert.equal(writes, 1, 'a consumed proposal cannot be approved twice')
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'suggest-review' }])
     const suggestion: any = await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'thaliris-local', key: 'local', text: 'stored after review', provenance: 'fixture' }); assert.equal(suggestion.isError, false)
     await (h.ctx as any).thaliris.approveMemory(h.parent.id, taskId, suggestion.value.proposal_id, signal())
@@ -272,11 +277,11 @@ async function restart(home: string) {
   const h = await harness(home, false)
   try {
     // Before any Thaliris tool call, the resumed root's dynamic context is
-    // restored from the Core task anchored to this exact native root.
-    const taskContext = async () => (await h.ctx.systemPrompt.assemble(assembleContextFor(h.parent!, signal()))).contexts.find(item => item.name === 'thaliris:task-context')?.text ?? ''
-    let restored = await taskContext()
-    for (let attempt = 0; !restored && attempt < 100; attempt++) { await new Promise(resolve => setTimeout(resolve, 100)); restored = await taskContext() }
-    assert.match(restored, new RegExp(`Thaliris task ${taskId} context`), 'restart restores the bounded Controller task context')
+    // restored from the Core task anchored to this exact native root, and the
+    // very first assembly (the first model step) already carries it.
+    const restored = (await h.ctx.systemPrompt.assemble(assembleContextFor(h.parent!, signal()))).contexts.find(item => item.name === 'thaliris:task-context')?.text ?? ''
+    assert.match(restored, new RegExp(`Thaliris task ${taskId} context`), 'the first assembly after restart carries the bounded Controller task context')
+    assert.match(restored, /Dispatch history: \d+ finished dispatch\(es\) archived as dsh-dispatch records/, 'dispatch history is summarized from records')
     const rivalContext = await h.ctx.agentLoop.create(SessionId('context-rival'), { provider: 'mock', model: 'parent' }, { cwd: h.workspace })
     await h.ctx.systemPrompt.assemble(assembleContextFor(rivalContext, signal()))
     await new Promise(resolve => setTimeout(resolve, 1500))
@@ -295,7 +300,10 @@ async function restart(home: string) {
     const reconciled: any = await h.execute('thaliris_reconcile', { task_id: lifecycle.state.task_id, base_revision: lifecycle.state.revision, action: 'reconcile' })
     assert.equal(reconciled.isError, false, JSON.stringify(reconciled)); assert.equal(reconciled.value.native_completed, true)
     const state = (await h.inspect(taskId)).state
-    assert.equal(state.active_work.length, 0); assert.ok(state.pending_results.some((value: string) => value.includes('Archived reservation:')))
+    assert.equal(state.active_work.length, 0)
+    assert.ok(!state.pending_results.some((value: string) => value.includes('Archived reservation:')), 'no dispatch history in routing state')
+    const archived = state.records.filter((item: any) => item.kind === 'dsh-dispatch' && item.producer === 'dsh:adapter').map((item: any) => JSON.parse(item.text))
+    assert.ok(archived.some((item: any) => item.operation === 'reconcile' && item.reservation.correlation === 'thaliris:unique-crash-window' && item.result.outcome === 'completed'), 'reconciled reservation is archived as a dispatch record')
     assert.equal((await h.execute('thaliris_task_close', { task_id: state.task_id, base_revision: state.revision, decision: 'Controller accepted native evidence after restart with memory removed' })).isError, false)
     console.log('PASS fresh process/runtime persisted native Workspace + same Session/new Agent Core continuation; rival denial; durable completed reconciliation; close without memory')
   } finally { await h.ctx.fiber.dispose() }

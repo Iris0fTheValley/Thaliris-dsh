@@ -44,7 +44,7 @@ export function apply(ctx, config) {
   const cancellations = new Set(), operations = new Set(), runs = new Set(), childGrants = new WeakMap()
   // Bounded Controller task context per native root, re-supplied as DSH dynamic
   // context; it is recorded history, never acceptance.
-  const taskContexts = new Map(), resumeAttempted = new Set()
+  const taskContexts = new Map(), restorations = new Map()
   function isNativeRoot(agent) {
     const header = agent?.session.header
     return !!agent && ctx.agents.get(agent.id) === agent && ctx.agents.roots().includes(agent)
@@ -119,9 +119,24 @@ export function apply(ctx, config) {
     text: ({ agent }) => {
       if (disposed || !isNativeRoot(agent)) return ''
       if (!taskContexts.has(agent.id)) { restoreContext(agent); return '' }
-      return [...taskContexts.get(agent.id).values()].filter(Boolean).join('\n\n')
+      return contextText(agent)
     },
   })
+  // The provider above is synchronous, so the first assembly after a restart
+  // awaits restoration here and fills that same context entry: the first model
+  // step already carries the recorded task context.
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    const agent = context.agent
+    if (!disposed && isNativeRoot(agent) && !taskContexts.has(agent.id)) {
+      await restoreContext(agent)
+      const entry = assembly.contexts.find(item => item.name === 'thaliris:task-context')
+      if (entry && !entry.text && !disposed && taskContexts.has(agent.id)) entry.text = contextText(agent)
+    }
+    return next()
+  })
+  function contextText(agent) {
+    return [...(taskContexts.get(agent.id)?.values() ?? [])].filter(Boolean).join('\n\n')
+  }
   function rememberContext(agent, taskId, text) {
     if (!agent || typeof taskId !== 'string' || text === undefined) return
     const contexts = taskContexts.get(agent.id) ?? new Map()
@@ -129,16 +144,17 @@ export function apply(ctx, config) {
     else contexts.delete(taskId)
     taskContexts.set(agent.id, contexts)
   }
-  /** After a process restart, restore context for tasks anchored to this exact native root. */
+  /** After a process restart, restore context for tasks anchored to this exact native root (once; never rejects). */
   function restoreContext(agent) {
-    if (resumeAttempted.has(agent.id)) return
-    resumeAttempted.add(agent.id)
+    if (restorations.has(agent.id)) return restorations.get(agent.id)
     const cancel = new AbortController()
     cancellations.add(cancel)
-    bridge(agent, 'resume', {}, cancel.signal).then(result => {
+    const restoration = bridge(agent, 'resume', {}, cancel.signal).then(result => {
       if (taskContexts.has(agent.id)) return
       taskContexts.set(agent.id, new Map(result.tasks.filter(task => task.task_context).map(task => [task.task_id, task.task_context])))
     }, () => {}).finally(() => cancellations.delete(cancel))
+    restorations.set(agent.id, restoration)
+    return restoration
   }
   function bridge(agent, operation, args, signal) {
     const pending = bridgeTail.then(() => bridgeExecute(agent, operation, args, signal))
@@ -218,7 +234,8 @@ export function apply(ctx, config) {
       ...(evidence ? { evidence_association: { candidate: evidence.candidate, requirement_refs: evidence.requirement_refs, observation_tool: EVIDENCE_TOOLS[0] } } : {}) })
     // The chosen model/effort and role identity are recorded with the reservation.
     const selected = { workstream: args.workstream, role: role.id, handoff_sha256: createHash('sha256').update(prompt).digest('hex'), correlation: `thaliris:${randomUUID()}`,
-      // Compact: archived reservations count toward Core's bounded routing state.
+      // Compact: the reservation is bounded routing state until finish/reconcile
+      // archives it, with its terminal observation, as a `dsh-dispatch` Core record.
       role_sha256: roleDigest(role), route: route ? `${route.provider}/${route.model}${route.reasoningEffort !== undefined ? '@' + route.reasoningEffort : ''}` : 'inherit',
       ...(evidence ? { evidence_handoff_id: evidence.handoff_id } : {}) }
     let begun = await bridge(agent, 'begin', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify(selected), ...(evidence ? { evidence } : {}) }, signal)
@@ -238,7 +255,7 @@ export function apply(ctx, config) {
       reservationBound.resolve()
       const result = await run.result
       await ctx.sessionPersistence.flush()
-      // The archived reservation already carries route, role digest and evidence handoff.
+      // The dispatch record archives the reservation, which carries route, role digest and evidence handoff.
       const observed = { workstream: selected.workstream, role: selected.role, handoff_sha256: selected.handoff_sha256, correlation: selected.correlation, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
       const beforeFinish = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       const ack = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
@@ -360,7 +377,8 @@ export function apply(ctx, config) {
       const capability = ctx.get('thalirisMemory')
       if (!capability) throw new Error('THALIRIS_MEMORY_CAPABILITY_UNAVAILABLE')
       const value = await capability.invoke(proposal.provider, 'write', { ...proposal, ...bound, signal, maxBytes: 16384 })
-      const recorded = await bridge(agent, 'proposal', { task_id: taskId, observation: JSON.stringify({ approval_id: randomUUID(), proposal_id: proposal.proposal_id, provider: proposal.provider, workspaceId: bound.workspaceId, outcome: 'provider-write-observed', provenance: 'native-client-approval' }) }, signal)
+      // Consumes the pending proposal and records the receipt as a `dsh-memory-approval` Core record.
+      const recorded = await bridge(agent, 'approval', { task_id: taskId, observation: JSON.stringify({ approval_id: randomUUID(), proposal_id: proposal.proposal_id, provider: proposal.provider, workspaceId: bound.workspaceId, outcome: 'provider-write-observed', provenance: 'native-client-approval' }) }, signal)
       return { value, recorded: true, ...recorded }
     }),
   })
@@ -369,6 +387,6 @@ export function apply(ctx, config) {
     for (const cancellation of cancellations) cancellation.abort('Thaliris plugin unloaded')
     await Promise.allSettled([...runs].map(run => run.dispose()))
     await Promise.allSettled([...operations])
-    runs.clear(); cancellations.clear(); taskContexts.clear()
+    runs.clear(); cancellations.clear(); taskContexts.clear(); restorations.clear()
   })
 }

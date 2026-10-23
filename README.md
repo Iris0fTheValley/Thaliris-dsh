@@ -202,7 +202,7 @@ DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Me
 | `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | 确立选定意图、查看显式选定的任务、在 Controller 自行判断后记录机械 DONE |
 | `thaliris_workstream` | 以角色、有界 handoff、可选模型路由与 reasoning effort、可选 evidence association 派发一个全新子代理；reservation 记录所选路由和派发时角色的摘要 |
 | `thaliris_reconcile` | 依据原生终止证据检查或调和崩溃遗留的 reservation；UNKNOWN 不会自动释放 |
-| `thaliris_task_status` | 有界状态：当前记录、authority 摘要与模式、evidence continuity（未纳入的 observation、未解决的 judgment） |
+| `thaliris_task_status` | 有界状态：当前记录、dispatch 历史（已结束的 dispatch 是 append-only 的 `dsh-dispatch` Core record，不占用 routing state）、authority 摘要与模式、evidence continuity（未纳入的 observation、未解决的 judgment） |
 | `thaliris_task_context` | 记录事实、决策、进展、待办与 milestone；压缩或恢复后，有界摘要会作为 DSH dynamic context 重新提供 |
 | `thaliris_task_register` / `thaliris_task_judge` | 登记不透明的需求；以精确的 observation 引用记录需求判断 |
 | `thaliris_task_mode` | 在真实的人类指令下切换 execution mode，使用 revision 与 authority 摘要 CAS，且需先解决进行中的工作 |

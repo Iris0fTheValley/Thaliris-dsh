@@ -339,6 +339,26 @@ describe('shared Thaliris settings client', () => {
     await editor.dispose()
   })
 
+  it('reads approval receipts from adapter dsh-memory-approval records', async () => {
+    const editor = new PolicyEditorController(createForm().form)
+    const { native } = renderPage(editor)
+    const withRecord = structuredClone(diagnostics) as any
+    const receipt = { approval_id: 'approval-2', proposal_id: 'proposal-1', provider: 'provider-one', workspaceId: 'workspace-1', outcome: 'provider-write-observed', provenance: 'native-client-approval' }
+    withRecord.task.state.records = [
+      { id: 'forged', kind: 'dsh-memory-approval', producer: 'dsh:controller', revision: 3, text: JSON.stringify({ receipt: { ...receipt, approval_id: 'forged-approval' } }) },
+      { id: 'dsh-memory-approval.r4', kind: 'dsh-memory-approval', producer: 'dsh:adapter', revision: 4, text: JSON.stringify({ receipt, proposal: null }) },
+    ]
+    act(() => native.update(state => { state.diagnostics = withRecord }))
+    fireEvent.click(screen.getByRole('tab', { name: en.tabDiagnostics }))
+    fireEvent.change(screen.getByRole('textbox', { name: en.selectTaskId }), { target: { value: 'task-1' } })
+    expect(screen.getByText(en.alreadyApproved)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.approveProposal })).toBeNull()
+    const receiptCard = screen.getByText(en.approvalReceipts).closest('article')
+    expect(receiptCard?.textContent).toContain('approval-2')
+    expect(receiptCard?.textContent).not.toContain('forged-approval')
+    await editor.dispose()
+  })
+
   it('renders unavailable and process-local forms as read-only', () => {
     const editor = new PolicyEditorController(createForm(policy(), false).form)
     renderPage(editor)

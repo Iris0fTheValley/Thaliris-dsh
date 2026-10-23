@@ -104,8 +104,12 @@ def test_same_core_task_explicit_close_and_external_anchor(workspace):
     assert anchor["dsh_controller_id"] == "native-root"
     assert anchor["contract"] == CONTRACT
     closed_state = json.loads(state_bytes(workspace, task["task_id"]))
-    assert json.loads(closed_state["pending_results"][1])["stop_reason"] == "error"
-    assert "Controller close decision" in closed_state["pending_results"][2]
+    assert closed_state["pending_results"] == [] and closed_state["active_work"] == []
+    dispatch, decision = closed_state["records"]
+    assert (dispatch["kind"], dispatch["producer"], dispatch["revision"]) == ("dsh-dispatch", "dsh:adapter", 3)
+    assert json.loads(dispatch["text"])["result"]["stop_reason"] == "error"
+    assert (decision["kind"], decision["producer"]) == ("dsh-close-decision", "dsh:controller")
+    assert "Controller close decision" in decision["text"]
     assert anchor["provenance"] == "SELECTED_TASK_INTENT"
     assert "host_actor_assurance" not in anchor
     assert "death_proof" not in anchor and "child_death_proof" not in anchor
@@ -316,7 +320,8 @@ def test_correlated_binding_and_unknown_reconciliation_preserve_original(workspa
     reconciled = invoke(workspace, "reconcile", {"task_id": task["task_id"], "base_revision": 3, "observation": json.dumps({**reservation, "child_id": "native-child", "outcome": "error", "provenance": "native-session-turn/end"})})
     assert reconciled["ok"] and reconciled["result"]["status"] == "ACTIVE"
     state = invoke(workspace, "inspect", {"task_id": task["task_id"]})["result"]["state"]
-    assert state["active_work"] == []
-    assert "Archived reservation" in state["pending_results"][0]
-    assert json.loads(state["pending_results"][1])["outcome"] == "error"
+    assert state["active_work"] == [] and state["pending_results"] == []
+    archive = json.loads(state["records"][-1]["text"])
+    assert archive["operation"] == "reconcile" and archive["reservation"] == {**reservation, "child_id": "native-child"}
+    assert archive["result"]["outcome"] == "error"
     assert not invoke(workspace, "inspect", {"task_id": task["task_id"]}, native_workspace_id="other-workspace")["ok"]

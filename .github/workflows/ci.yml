@@ -64,6 +64,11 @@ jobs:
         run: python -m pytest tests/test_bridge_continuity.py --junitxml=results/bridge-continuity.xml
         env:
           THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
+      - name: Dispatch history records and legacy migration
+        if: ${{ !cancelled() }}
+        run: python -m pytest tests/test_bridge_history.py --junitxml=results/bridge-history.xml
+        env:
+          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
