@@ -3,7 +3,7 @@
 `policy.mjs` owns the native Controller template. `role-templates.mjs` owns editable
 initial role seeds. `build-bundle.mjs` derives `cordis.patch.yml`; explicit stored
 roles (including []) remain user policy. Model routes, tool grants, memory and
-context permissions are unchanged. DSH persona receives the selected role prompt;
+context permissions are unchanged. The Controller template puts cognitive isolation and division of labor before model choice, then picks the cheapest allowed route and lowest reasoning effort that fit the working set (cheapest for deterministic closure and CI/build observation, mid for clear-causal work, strongest for coupled or unclear work and decision-critical challenge), escalates only on evidence, and respects a role policy that allows no cheap route. DSH persona receives the selected role prompt;
 selected handoff is a separate payload. Core does not infer a semantic projection.
 
 Global Codex instructions, hooks, project routers and TOML profiles are not this
