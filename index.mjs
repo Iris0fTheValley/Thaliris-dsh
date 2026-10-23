@@ -8,7 +8,8 @@ export { Config } from './policy.mjs'
 export const name = 'thaliris-dsh'
 export const inject = ['agents', 'systemPrompt', 'tools', 'subagents', 'subprocess', 'workspaceRegistry', 'sessionPersistence', 'llm']
 export const TOOL_NAMES = Object.freeze(['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
-  'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode'])
+  'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
+  'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate'])
 export const MEMORY_TOOLS = Object.freeze(['thaliris_memory_read', 'thaliris_memory_search', 'thaliris_memory_propose'])
 /** Granted by the adapter only to a child whose dispatch carries an evidence association. */
 export const EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])
@@ -25,6 +26,15 @@ const sourceSchema = object({ id: string, kind: string, locator: string, summary
 const evidenceSchema = object({ candidate: string, requirement_refs: strings })
 const recordSchema = object({ id: string, kind: string, text: string, source_refs: strings, status: string, supersedes: strings }, ['id', 'kind', 'text'])
 const judgmentSchema = object({ id: string, candidate: string, requirement_ref: string, observation_refs: strings, outcome: { type: 'string', enum: ['satisfied', 'unknown', 'repair', 'no-current-impact'] }, reasoning: string, judgment_refs: strings }, ['id', 'candidate', 'requirement_ref', 'observation_refs', 'outcome', 'reasoning'])
+const limited = maximum => ({ type: 'array', items: string, maxItems: maximum })
+const identityAmendSchema = object({ ...identitySchema, base_version: { type: 'integer', minimum: 0 }, base_sha256: string, text: string, summary: string, rationale: string,
+  decision: object({ decided_by: string, human_instruction: string }), challenge_text: string, why_not_lower: string, evidence_refs: limited(64), resolves: limited(64), affected_refs: limited(64) },
+[...Object.keys(identitySchema), 'base_version', 'text', 'summary', 'rationale', 'decision'])
+const identityChallengeSchema = object({ ...identitySchema, targets: limited(16), summary: string, text: string, evidence_refs: limited(64), proposed_change: string, dismiss: string, reason: string }, Object.keys(identitySchema))
+const identityRelateSchema = object({ ...identitySchema, add: { type: 'array', maxItems: 64, items: object({ from: string, rel: { type: 'string', enum: ['serves', 'supports', 'challenges', 'supersedes'] }, to: string, note: string }, ['from', 'rel', 'to']) },
+  retract: { type: 'array', maxItems: 64, items: object({ id: string, reason: string }) } }, Object.keys(identitySchema))
+const identityReadSchema = object({ task_id: string, action: { type: 'string', enum: ['status', 'get', 'trace'] }, version: { type: 'integer', minimum: 1 }, items: limited(64), amendment: string, challenge: string,
+  ref: string, direction: { type: 'string', enum: ['up', 'down', 'both'] }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, ['task_id', 'action'])
 const roleDigest = role => createHash('sha256').update(JSON.stringify(role)).digest('hex').slice(0, 16)
 function validate(parameters, args) {
   const errors = validateJsonSchemaValue(parameters, args)
@@ -292,6 +302,31 @@ export function apply(ctx, config) {
   register(TOOL_NAMES[9], 'Switch execution mode only on an actual human instruction, with the expected authority digest from inspect/status; resolve active work first. Goal, boundary, invariants and acceptance stay frozen; child roles and grants are not widened.',
     object({ ...identitySchema, expected_authority_sha256: string, mode: { type: 'string', enum: ['delegated', 'controller-direct', 'single-agent'] }, human_instruction: string }),
     (args, agent, signal) => bridge(agent, 'mode', args, signal))
+  // Project Identity (Core 0.5.0) is Controller-only: names carry the thaliris_task_ prefix, so role grants can never include them,
+  // and TOOL_NAMES denies them to every dispatched child. Children see identity only when the Controller quotes selected items into a handoff.
+  register(TOOL_NAMES[10], 'Read the project identity (separate from Task Authority and the Memory Provider). action status: bounded state, item ids and open challenges; get: the recorded version, selected items (version, items), one amendment or one challenge; trace: registered relations around a ref (ref, direction, depth). Reads follow the selected task; absent identity is normal.',
+    identityReadSchema, (args, agent, signal) => {
+      const { action, task_id, ...rest } = args
+      const allowed = { status: [], get: ['version', 'items', 'amendment', 'challenge'], trace: ['ref', 'direction', 'depth'] }[action]
+      const stray = Object.keys(rest).filter(key => !allowed.includes(key))
+      if (stray.length || (action === 'trace' && rest.ref === undefined)) throw new Error(`THALIRIS_INVALID_ARGUMENTS: identity ${action} does not accept ${stray.join(', ') || 'a missing ref'}`)
+      return bridge(agent, `identity_${action}`, { task_id, ...rest }, signal)
+    })
+  register(TOOL_NAMES[11], 'Controller records an explicit project identity amendment (base_version 0 establishes v1) only on the explicit decision of the human owner: quote it in decision.human_instruction with decided_by, and give the rationale. base_sha256 is the on_disk_sha256 from identity status (omit it when no IDENTITY.md exists). Not a memory proposal or approval; the frozen contract of a running task is never rewritten.',
+    identityAmendSchema, (args, agent, signal) => {
+      const { task_id, base_revision, base_sha256, ...rest } = args
+      return bridge(agent, 'identity_amend', { task_id, base_revision, input: { ...rest, base_sha256: base_sha256 ?? null } }, signal)
+    })
+  register(TOOL_NAMES[12], 'Controller records evidence challenging the project identity instead of editing it (targets, summary, text, optional evidence_refs and proposed_change), or dismisses an open challenge with a reason (dismiss, reason). Amendments resolve challenges through identity_amend.resolves.',
+    identityChallengeSchema, (args, agent, signal) => {
+      const { task_id, base_revision, ...rest } = args
+      return bridge(agent, 'identity_challenge', { task_id, base_revision, input: rest }, signal)
+    })
+  register(TOOL_NAMES[13], 'Controller registers (add) or retracts typed purpose relations (serves, supports, challenges, supersedes) between refs for significant decisions, designs or experiments. A challenges relation may not target identity; evidence against identity is a challenge.',
+    identityRelateSchema, (args, agent, signal) => {
+      const { task_id, base_revision, ...rest } = args
+      return bridge(agent, 'identity_relate', { task_id, base_revision, input: rest }, signal)
+    })
   register(EVIDENCE_TOOLS[0], 'Record one already discovered local fact that changes your conclusion, local acceptance or a critical UNKNOWN, with source refs. The adapter binds task, handoff, candidate and requirement refs; do not supply them.',
     object({ id: string, text: string, source_refs: strings, sources: { type: 'array', items: sourceSchema }, observed_state: string }, ['id', 'text', 'source_refs']), async (args, agent, signal) => {
       const grant = childGrants.get(agent)

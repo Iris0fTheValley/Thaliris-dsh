@@ -16,6 +16,7 @@ requirements. Focused Implementer returns remaining work without choosing a succ
 The Controller template describes evidence continuity (register, dispatch association,
 status, judgment), dynamic task context, human-instructed mode switching, per-dispatch
 model/effort selection and dispatch-time role binding, as concepts tied to the tools.
+The template also carries one Project identity paragraph (Core 0.5.0) naming `thaliris_task_identity` and its amend, challenge and relate companions: identity is separate from Task Authority, the Memory Provider, milestones and evidence; read it on demand for directional or architectural work, not ordinary local repairs; repair at the lowest sufficient layer and record a challenge instead of editing; amend only on the human owner's explicit decision; an amendment is not a memory proposal and never rewrites a running task's frozen contract; nothing propagates automatically; absent identity is normal. A user's stored `policy.controllerPrompt` is not overwritten and adopts the paragraph only through Settings editing.
 Template normalization adds semantic mutation/evidence practice and the full Focused
 loop/endpoint, while keeping review optional, independent and evidence based. Executors
 report criterion-linked evidence and UNKNOWN; Controller judges product completion from

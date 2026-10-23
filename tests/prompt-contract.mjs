@@ -42,6 +42,7 @@ concepts(controller, 'independent, non-writing challenge when it could change a 
 concepts(controller, 'reasoning specialist', 'without choosing a successor', 'controller decides what follows', 'model route and reasoning effort per dispatch', 'allowed routes', 'recorded with the reservation', 'changes neither role responsibility nor permissions', 'role bound at dispatch', 'cognitive isolation and division of labor come first', 'cheapest allowed route and lowest reasoning effort', 'long-running observation', 'escalate only on evidence', 'allows no cheap route', 'user policy')
 concepts(controller, 'thaliris_task_register', 'evidence association', 'thaliris_observe', 'adapter binds', 'children never judge requirements', 'controller never authors child observations', 'thaliris_task_status', 'thaliris_task_judge', 'satisfied, unknown, repair or no-current-impact', 'exact observation refs', 'judgment_refs', 'not disposition', 'candidate label is not an observed repository state', 'not automatically current truth')
 concepts(controller, 'thaliris_task_context', 'facts, decisions, progress, open items, milestone', 'after compaction or resume', 'not fresh verification', 'thaliris_task_mode', 'actual human instruction', 'expected authority digest', 'active work is resolved', 'stay frozen', "no mode widens a child's role, tool grants or readonly limits")
+concepts(controller, 'project identity is separate from task authority, the memory provider, milestones and evidence', 'thaliris_task_identity', 'status, get, trace', 'legacy memory labels', 'confer nothing', 'absent identity is normal and blocks nothing', "only on the user's decision", 'one summary line', 'directional or architectural work', 'replanning', 'cross-layer conflicts', 'before turning an implementation limit into a principle', 'not for ordinary local repairs', 'locate the layer', 'trace up', 'lowest sufficient layer', 'thaliris_task_identity_challenge', 'instead of editing it', 'thaliris_task_identity_amend', "human owner's explicit decision", 'quote it', 'give the rationale', 'why it is insufficient', 'not a memory provider proposal or approval', "never rewrites a running task's frozen contract", 'nothing propagates automatically', 'which registered dependents to revalidate', 'thaliris_task_identity_relate', 'significant decisions, designs or experiments', 'trace covers registered relations only', 'absence of a relation is not evidence of independence', 'quote selected items into a handoff')
 concepts(controller, 'preserve delegated, controller-direct and single-agent modes', 'further verification may be delegated when it could change the decision', 'suitable existing role or the current execution mode', 'no fixed closing stage or automatic spawn is required')
 assert.ok(!controller.toLowerCase().includes('closing handoff'))
 for (const id of ['implementer', 'focused-implementer']) concepts(role(id).prompt, 'criterion-linked verification', 'evidence limits', 'unknown to controller', 'controller judges product completion', 'original objective', 'acceptance criteria', 'mechanical closure', 'test pass', 'reviewer ready', 'native completed', 'not product completion')
@@ -61,7 +62,18 @@ assert.ok(native.includes('persona: role.prompt'))
 assert.ok(native.includes('...args.handoff'))
 assert.ok(native.includes('toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }'))
 assert.ok(native.includes("EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])"))
-for (const name of ['thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode']) assert.ok(native.match(/export const TOOL_NAMES = Object\.freeze\(\[([^\]]+)\]/s)[1].includes(`'${name}'`), name)
+const identityTools = ['thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate']
+for (const name of ['thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode', ...identityTools]) assert.ok(native.match(/export const TOOL_NAMES = Object\.freeze\(\[([^\]]+)\]/s)[1].includes(`'${name}'`), name)
+// Identity tools are Controller-only: never child-allowed, never role grants, always on the dispatch deny list.
+for (const name of identityTools) {
+  assert.ok(name.startsWith('thaliris_task_'), name)
+  assert.ok(policy.includes("tool.startsWith('thaliris_task_')"), 'role grants can never include identity tools')
+}
+const identityBlock = native.slice(native.indexOf('register(TOOL_NAMES[10]'), native.indexOf('register(EVIDENCE_TOOLS[0]'))
+for (const index of [10, 11, 12, 13]) assert.ok(identityBlock.includes(`register(TOOL_NAMES[${index}]`), `identity tool ${index} is registered`)
+assert.ok(!identityBlock.includes(', true)'), 'identity tools are never child-allowed')
+assert.ok(native.includes("bridge(agent, `identity_${action}`"))
+for (const operation of ['identity_amend', 'identity_challenge', 'identity_relate']) assert.ok(native.includes(`bridge(agent, '${operation}'`), operation)
 assert.ok(native.includes('const role = grant?.role'), 'children keep the dispatch-time role binding')
 assert.ok(policy.includes("tool === 'thaliris_observe'"), 'observation grants are per dispatch, never role policy')
 assert.ok(native.includes('maxDepth: 1'))

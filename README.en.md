@@ -206,8 +206,14 @@ The native root Controller gets these tools; children never see them:
 | `thaliris_task_context` | Record facts, decisions, progress, open items and the milestone; a bounded summary returns as DSH dynamic context after compaction or resume |
 | `thaliris_task_register` / `thaliris_task_judge` | Register opaque requirements; record requirement judgments with exact observation refs |
 | `thaliris_task_mode` | Switch execution mode on an actual human instruction with revision and authority-digest CAS, after active work is resolved |
+| `thaliris_task_identity` | Read the project identity (`action`: `status`, `get` a version, selected items, one amendment or one challenge, `trace` registered relations); absent identity is normal |
+| `thaliris_task_identity_amend` / `thaliris_task_identity_challenge` / `thaliris_task_identity_relate` | Record an explicit amendment on the human owner's decision, record or dismiss a challenge, register or retract purpose relations (Controller only) |
 
 A child dispatched with an evidence association additionally receives `thaliris_observe`; the adapter binds each observation to that dispatch's handoff, candidate and requirement refs and to the bound native child, and the grant ends with the dispatch. The Controller cannot author child observations, and children cannot register, judge or switch modes. A dispatched child keeps the role (prompt, tools, memory grants) bound at dispatch even if Settings change later. Mode switches never widen a child's role or grants; delegated dispatch requires delegated mode.
+
+### Project identity
+
+Core 0.5.0 adds a project-level identity plane: a versioned, repository-tracked statement of what the project is for and what must not be changed silently, kept under `.project-identity/` and changed only by an explicit, recorded amendment on the human owner's decision. It is separate from Task Authority (one task's frozen intent), the Memory Provider and milestones; amending it is not a memory proposal or approval, and it never rewrites a running task's frozen contract. The bridge exposes Core's read operations (status, get, trace) and the three mutations (amend, challenge, relate) to the native root Controller only; the four `thaliris_task_identity*` tools carry the `thaliris_task_` prefix, so a role grant can never include them, and they are on the deny list of every dispatched child. Mutations use the same task-revision CAS as other writes, take their actor from the adapter-bound native Controller identity and do not bump the task revision. When an identity exists, the dynamic task context gains Core's one-line summary; when none exists nothing changes and nothing is blocked. Children receive identity content only when the Controller quotes selected items into a handoff. This adapter has no path-level child write guard: a child's edit to `.project-identity/` is detected afterwards (Core reports `UNRECORDED_CHANGE` or `INVALID`, and Git shows the diff), not prevented. See Core's [Project Identity](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-project-identity.md) document.
 
 Memory is an independent optional capability and is disabled by default. The memory capability and local text provider can be installed separately; task routing and close work without Memory or the client UI. There are no embeddings/vector RAG or automatic retrieval. Memory reads follow grants, and writes follow user policy and Core task checks. See [capabilities](CAPABILITIES.md) and the [client contract](CLIENT-CONTRACT.md).
 
@@ -226,7 +232,7 @@ Install the main plugin archive through the DSH Plugin Manager. Add both optiona
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
 ~~~
 
 The generated bundle disables runtime/API by default. Before enabling it, configure absolute pythonExecutable, corePath and authorityDirectory values; corePath must point to Core installed in the same Python environment, and authorityDirectory must stay outside the governed Workspace. Then register the canonical Git root as a native DSH Workspace, create or resume its persistent root Session, and bind the exact Workspace ID and root in policy. Do not store credentials in plugin configuration.

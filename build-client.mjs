@@ -31,7 +31,7 @@ try {
   writeFileSync(join(temporary, 'tsdown.config.ts'), `import { clientBundle } from '../tsdown.client.ts'\nexport default clientBundle('@thaliris/dsh-plugin', ['lib/types/index.js'])\n`)
   writeFileSync(join(temporary, 'package.json'), JSON.stringify({
     name: '@thaliris/dsh-plugin',
-    version: '0.2.0',
+    version: '0.3.0',
     type: 'module',
     dsh: { client: {
       platform: 'web',

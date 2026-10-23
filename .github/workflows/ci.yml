@@ -69,6 +69,11 @@ jobs:
         run: python -m pytest tests/test_bridge_history.py --junitxml=results/bridge-history.xml
         env:
           THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
+      - name: Project identity bridge
+        if: ${{ !cancelled() }}
+        run: python -m pytest tests/test_bridge_identity.py --junitxml=results/bridge-identity.xml
+        env:
+          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

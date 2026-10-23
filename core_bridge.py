@@ -19,7 +19,14 @@ OBSERVATION_FIELDS = {"id", "text", "source_refs", "sources", "observed_state"}
 SOURCE_FIELDS = {"id", "kind", "locator", "summary"}
 RECORD_FIELDS = {"id", "kind", "text", "source_refs", "status", "supersedes"}
 JUDGMENT_FIELDS = {"id", "candidate", "requirement_ref", "observation_refs", "outcome", "reasoning", "judgment_refs"}
-CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"}
+# Project Identity plane (Core 0.5.0): `.project-identity/` is Core-owned, repository-tracked
+# state, separate from the task ledger and from the Memory Provider. Reads follow `status`;
+# mutations are Controller-only and apply Core's own task-revision CAS.
+IDENTITY_READ_OPERATIONS = frozenset({"identity_status", "identity_get", "identity_trace"})
+IDENTITY_WRITE_OPERATIONS = frozenset({"identity_amend", "identity_challenge", "identity_relate"})
+IDENTITY_GET_FIELDS = frozenset({"version", "items", "amendment", "challenge"})
+IDENTITY_TRACE_FIELDS = frozenset({"direction", "depth"})
+CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"} | IDENTITY_READ_OPERATIONS | IDENTITY_WRITE_OPERATIONS
 # Active Work and Pending Results hold only current routing state (Core bounds
 # them to 8 KiB together). Finished dispatches, consumed memory proposals and
 # legacy history move to append-only Core records with adapter provenance.
@@ -117,7 +124,7 @@ def dispatch(request: dict) -> dict:
     if operation == "inspect":
         if set(args) != {"task_id"}:
             raise ValueError("INVALID_INSPECT_ARGUMENTS")
-        return {"ok": True, "state": state, "contract": record["contract"], "authority_sha256": authority_digest(store), "task_context": task_context_text(core, state)}
+        return {"ok": True, "state": state, "contract": record["contract"], "authority_sha256": authority_digest(store), "task_context": task_context_text(core, state, root)}
     if operation == "status":
         if set(args) - {"task_id", "evidence_offset"}:
             raise ValueError("INVALID_STATUS_ARGUMENTS")
@@ -128,7 +135,9 @@ def dispatch(request: dict) -> dict:
         records, total = current_records(state)
         return {**packet, "Current Records": records, "Current Record Count": total, "Dispatch History": dispatch_history(state),
                 "Authority": {"status": record["status"], "execution_mode": record["contract"]["execution_mode"], "sha256": authority_digest(store)},
-                "task_context": task_context_text(core, state)}
+                "task_context": task_context_text(core, state, root)}
+    if operation in IDENTITY_READ_OPERATIONS:
+        return identity_read(core, root, state, operation, args)
     if operation == "observe":
         # Child evidence arrives through the plugin's dispatch grant, never from
         # model-supplied provenance. The bound reservation is the association.
@@ -151,6 +160,8 @@ def dispatch(request: dict) -> dict:
         return result
     if args.get("task_id") != state["task_id"] or type(args.get("base_revision")) is not int or args["base_revision"] != state["revision"]:
         raise ValueError("TASK_ID_OR_REVISION_CONFLICT")
+    if operation in IDENTITY_WRITE_OPERATIONS:
+        return identity_write(core, root, native_id, state, operation, args)
     if operation == "context":
         return task_context_update(core, root, store, state, args)
     if operation in {"register", "judge"}:
@@ -162,7 +173,7 @@ def dispatch(request: dict) -> dict:
             raise ValueError("UNRESOLVED_ACTIVE_WORK_CANNOT_SWITCH_MODE")
         # Core CAS keeps goal, boundary, invariants and acceptance frozen.
         result = store.switch_mode(args["expected_authority_sha256"], args["base_revision"], args["mode"], args["human_instruction"])
-        return {**result, "authority_sha256": authority_digest(store), "task_context": task_context_text(core, core.task_show(root)["state"])}
+        return {**result, "authority_sha256": authority_digest(store), "task_context": task_context_text(core, core.task_show(root)["state"], root)}
     if operation == "close":
         if set(args) != {"task_id", "base_revision", "decision"} or not isinstance(args["decision"], str) or not args["decision"].strip() or len(args["decision"]) > 3500:
             raise ValueError("CONTROLLER_DECISION_REQUIRED")
@@ -208,6 +219,54 @@ def dispatch(request: dict) -> dict:
     return result
 
 
+def identity_summary_line(root: Path | None) -> str | None:
+    """Core's one-line identity summary, or None when absent, unreadable or unsupported.
+
+    Identity text is never injected; this is navigation only. A failure here
+    must not break task context, so the read is best effort.
+    """
+    if root is None:
+        return None
+    try:
+        from thaliris import identity
+        return identity.identity_summary(root)
+    except (ValueError, OSError, KeyError, TypeError, ImportError):
+        return None
+
+
+def identity_read(core, root: Path, state: dict, operation: str, args: dict) -> dict:
+    """Read-only Project Identity observation for the selected, authority-checked task."""
+    from thaliris import identity
+    if operation == "identity_status":
+        if set(args) != {"task_id"}:
+            raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+        # The summary rides along so a changed baseline (for example after a Git pull) refreshes the cached task context.
+        return {**identity.identity_status(root), "task_context": task_context_text(core, state, root)}
+    if operation == "identity_get":
+        if set(args) - {"task_id"} - IDENTITY_GET_FIELDS:
+            raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+        return identity.identity_get(root, **{key: args[key] for key in IDENTITY_GET_FIELDS if key in args})
+    if set(args) - {"task_id", "ref"} - IDENTITY_TRACE_FIELDS or not isinstance(args.get("ref"), str):
+        raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+    return identity.identity_trace(root, args["ref"], **{key: args[key] for key in IDENTITY_TRACE_FIELDS if key in args})
+
+
+def identity_write(core, root: Path, native_id: str, state: dict, operation: str, args: dict) -> dict:
+    """Controller-only Project Identity mutation under the task revision CAS.
+
+    The actor comes from the adapter-bound native Controller identity, never
+    from model arguments. Core does not bump the task revision for identity
+    writes, but the dynamic task context is rebuilt because its identity line
+    may have changed.
+    """
+    from thaliris import identity
+    if set(args) != {"task_id", "base_revision", "input"} or not isinstance(args["input"], dict):
+        raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+    call = {"identity_amend": identity.identity_amend, "identity_challenge": identity.identity_challenge, "identity_relate": identity.identity_relate}[operation]
+    result = call(root, "dsh:" + native_id, args["base_revision"], args["input"])
+    return {**result, "task_context": task_context_text(core, core.task_show(root)["state"], root)}
+
+
 def authority_digest(store) -> str:
     from thaliris.authority import digest
     return digest(store.path())
@@ -236,7 +295,7 @@ def resume(core, AuthorityStore, root: Path, authority_directory: Path, native_i
                 continue
             state = core.task_show(root)["state"]
             tasks.append({"task_id": task_id, "revision": state["revision"], "execution_mode": record["contract"]["execution_mode"],
-                          "task_context": task_context_text(core, state)})
+                          "task_context": task_context_text(core, state, root)})
         except (ValueError, OSError, KeyError, TypeError):
             unreadable += 1
     return {"ok": True, "tasks": tasks[:4], "task_count": len(tasks), "unreadable_count": unreadable}
@@ -377,12 +436,13 @@ def current_records(state: dict, limit: int = 12, text_chars: int = 600) -> tupl
     return shown, len(current)
 
 
-def task_context_text(core, state: dict, budget: int = 6000) -> str | None:
+def task_context_text(core, state: dict, root: Path | None = None, budget: int = 6000) -> str | None:
     """Bounded summary of the Controller's recorded task context.
 
     DSH re-supplies it as dynamic context after compaction or resume, so global
     semantic state is not re-investigated. It is recorded history, not fresh
-    verification, and it never carries acceptance.
+    verification, and it never carries acceptance. With a root it also carries
+    Core's one-line Project Identity summary, only when an identity is recorded.
     """
     if state.get("status") != "ACTIVE":
         return None
@@ -393,6 +453,9 @@ def task_context_text(core, state: dict, budget: int = 6000) -> str | None:
              f"- Goal: {goal[:600]}{' ...' if len(goal) > 600 else ''}"]
     if state.get("current_milestone"):
         lines.append(f"- Milestone: {state['current_milestone']}")
+    summary = identity_summary_line(root)
+    if summary:
+        lines.append(f"- {summary}")
     if state["active_work"]:
         lines.append("- Active Work (unresolved native reservation; inspect or reconcile it):")
         lines += [f"  - {value[:300]}" for value in state["active_work"][:4]]
@@ -437,7 +500,7 @@ def task_context_update(core, root: Path, store, state: dict, args: dict) -> dic
     current = core.task_show(root)["state"]
     records, total = current_records(current)
     return {**result, "Task Context": {"milestone": current["current_milestone"], "Current Records": records, "Current Record Count": total},
-            "task_context": task_context_text(core, current)}
+            "task_context": task_context_text(core, current, root)}
 
 
 def continuity_append(core, root: Path, store, args: dict, operation: str) -> dict:
@@ -466,7 +529,7 @@ def continuity_append(core, root: Path, store, args: dict, operation: str) -> di
     store.checkpoint()
     packet = core.task_status(root)
     return {"ok": True, "task_id": current["task_id"], "revision": current["revision"], "Evidence Continuity": packet["Evidence Continuity"],
-            "task_context": task_context_text(core, current)}
+            "task_context": task_context_text(core, current, root)}
 
 
 def begin_with_evidence(core, root: Path, args: dict) -> dict:
