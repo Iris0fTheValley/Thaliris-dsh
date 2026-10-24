@@ -77,9 +77,11 @@ for (const [, filename] of archives) {
   cpSync(path, join(packSource, filename))
 }
 
+const initialProfile = loadProfileDirectory('dsh', profileDirectory, anchor)
+assert.deepEqual(initialProfile.skippedBundles, [], 'the fixture core bundle must load')
 const profile = {
   name: 'product',
-  startedBundles: loadProfileDirectory('dsh', profileDirectory, anchor).layers.map(layer => layer.packageName),
+  startedBundles: initialProfile.layers.map(layer => layer.packageName),
   dir: profileDirectory,
   patchPath: join(profileDirectory, 'cordis.patch.yml'),
   installAnchor: anchor,
