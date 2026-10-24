@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.1、Claude Code plugin 0.4.1、DSH plugin 0.3.2。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.2。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -232,7 +232,7 @@ DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Me
 
 ### 项目 identity
 
-Core 0.5.0 增加项目级 identity 层：一份带版本、纳入仓库跟踪的声明，说明项目为何存在、哪些内容不得被静默更改，存放在 `.project-identity/`，只能经人类所有者决定后的显式、可追溯 amendment 修改。它独立于 Task Authority（单个任务冻结的意图）、Memory Provider 与 milestone；amendment 不是 memory proposal 或 approval，也绝不改写运行中任务已冻结的 contract。bridge 只向原生根 Controller 暴露 Core 的读取操作（status、get、trace）和三类写入（amend、challenge、relate）；四个 `thaliris_task_identity*` 工具带 `thaliris_task_` 前缀，因此角色的工具授予永远不能包含它们，并且位于所有已派发子代理的 deny 列表中。写入沿用与其他写入相同的任务 revision CAS，actor 取自 adapter 绑定的原生 Controller 身份，且不会推进任务 revision。存在 identity 时，动态任务上下文会增加 Core 的一行摘要；不存在时一切照旧，也不会阻塞任何事。子代理只有在 Controller 把选定条目引用进 handoff 时才会获得 identity 内容。本 adapter 没有路径级的子代理写入防护：子代理对 `.project-identity/` 的改动只能事后发现（Core 报告 `UNRECORDED_CHANGE` 或 `INVALID`，Git diff 可见），而无法被阻止。详见 Core 的 [Project Identity](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-project-identity.md) 文档。
+Core 0.5.0 增加项目级 identity 层：一份带版本、纳入仓库跟踪的声明，说明项目为何存在、哪些内容不得被静默更改，存放在 `.project-identity/`，只能经人类所有者决定后的显式、可追溯 amendment 修改。它独立于 Task Authority（单个任务冻结的意图）、Memory Provider 与 milestone；amendment 不是 memory proposal 或 approval，也绝不改写运行中任务已冻结的 contract。bridge 只向原生根 Controller 暴露 Core 的读取操作（status、get、trace）和三类写入（amend、challenge、relate）；六个 `thaliris_task_identity*` 工具带 `thaliris_task_` 前缀，因此角色的工具授予永远不能包含它们，并且位于所有已派发子代理的 deny 列表中。写入沿用与其他写入相同的任务 revision CAS，actor 取自 adapter 绑定的原生 Controller 身份，且不会推进任务 revision。存在 identity 时，动态任务上下文会增加 Core 的一行摘要；不存在时一切照旧，也不会阻塞任何事。子代理只有在 Controller 把选定条目引用进 handoff 时才会获得 identity 内容。本 adapter 没有路径级的子代理写入防护：子代理对 `.project-identity/` 的改动只能事后发现（Core 报告 `UNRECORDED_CHANGE` 或 `INVALID`，Git diff 可见），而无法被阻止。详见 Core 的 [Project Identity](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/thaliris-project-identity.md) 文档。
 
 Memory 是独立可选能力，默认关闭。可单独安装 memory capability 和本地文本 provider；task routing 和 close 无需启用 Memory 或 client UI。没有 embeddings/vector RAG 或自动检索；Memory 读取受授权控制，写入遵循用户许可和 Core task 检查。详细边界见[能力说明](CAPABILITIES.md)和[客户端契约](CLIENT-CONTRACT.md)。
 
