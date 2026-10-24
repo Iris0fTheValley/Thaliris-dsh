@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)))
 const source = process.env.DSH_SOURCE
 if (!source) throw new Error('Set DSH_SOURCE to the pinned DSH source checkout.')
-const expected = '22ddee3792402c3e70ec5f86a63c3e3e895a2f60'
+const expected = 'd743267388641bc76f17c45ce8b4c231aed1d32c'
 const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
 if (revision.status !== 0 || revision.stdout.trim() !== expected) {
   throw new Error(`DSH source revision must be ${expected}.`)

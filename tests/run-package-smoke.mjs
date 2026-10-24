@@ -13,7 +13,7 @@ if (!source || !packDirectory || !temporaryRoot || !process.env.THALIRIS_TEST_PY
 }
 mkdirSync(resolve(temporaryRoot), { recursive: true })
 const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== '22ddee3792402c3e70ec5f86a63c3e3e895a2f60') {
+if (revision.status !== 0 || revision.stdout.trim() !== 'd743267388641bc76f17c45ce8b4c231aed1d32c') {
   throw new Error('DSH source revision differs from the verified install baseline.')
 }
 const requireSource = createRequire(resolve(source, 'package.json'))

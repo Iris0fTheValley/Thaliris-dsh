@@ -12,7 +12,7 @@ const corePath = process.env.THALIRIS_CORE_PATH
 if (!source || !python || !corePath) throw new Error('Set DSH_SOURCE (pinned clone), THALIRIS_CORE_PATH (main Core source import root), and THALIRIS_TEST_PYTHON (Python >=3.11).')
 if (!existsSync(corePath) || !existsSync(python)) throw new Error('THALIRIS_CORE_PATH and THALIRIS_TEST_PYTHON must name existing paths.')
 const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== '22ddee3792402c3e70ec5f86a63c3e3e895a2f60') throw new Error('DSH source revision differs from the verified API baseline')
+if (revision.status !== 0 || revision.stdout.trim() !== 'd743267388641bc76f17c45ce8b4c231aed1d32c') throw new Error('DSH source revision differs from the verified API baseline')
 const requireSource = createRequire(resolve(source, 'package.json'))
 const temp = mkdtempSync(join(tmpdir(), 'thaliris-dsh-runner-'))
 const tsconfig = join(temp, 'tsconfig.json')
