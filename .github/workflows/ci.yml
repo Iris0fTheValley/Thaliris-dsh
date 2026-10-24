@@ -50,28 +50,9 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install 'pytest>=8.0'
       - run: python -c "from pathlib import Path; Path('results').mkdir(exist_ok=True)"
-      - name: Core lock consistency
-        run: python -m pytest tests/test_core_lock.py --junitxml=results/core-lock.xml
-        env:
-          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
-      - name: Bridge regression
-        if: ${{ !cancelled() }}
-        run: python -m pytest tests/test_bridge.py --junitxml=results/bridge.xml
-        env:
-          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
-      - name: Evidence continuity, task context and mode bridge
-        if: ${{ !cancelled() }}
-        run: python -m pytest tests/test_bridge_continuity.py --junitxml=results/bridge-continuity.xml
-        env:
-          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
-      - name: Dispatch history records and legacy migration
-        if: ${{ !cancelled() }}
-        run: python -m pytest tests/test_bridge_history.py --junitxml=results/bridge-history.xml
-        env:
-          THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
-      - name: Project identity bridge
-        if: ${{ !cancelled() }}
-        run: python -m pytest tests/test_bridge_identity.py --junitxml=results/bridge-identity.xml
+      # The whole directory: a new test file runs without a workflow edit.
+      - name: Core lock and bridge suites
+        run: python -m pytest tests --junitxml=results/bridge.xml
         env:
           THALIRIS_CORE_PATH: ${{ github.workspace }}/shared-core/src
       - uses: actions/upload-artifact@v4

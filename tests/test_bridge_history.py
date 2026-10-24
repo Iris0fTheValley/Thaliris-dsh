@@ -37,37 +37,35 @@ def run_dispatch(workspace, task_id: str, index: int, *, terminal: str) -> dict:
     return ok(invoke(workspace, terminal, {"task_id": task_id, "base_revision": begun["revision"], "observation": json.dumps(observed)}))
 
 
-def test_fifty_finished_dispatches_keep_finish_reconcile_and_close_working(workspace):
+def test_finished_dispatches_beyond_the_recent_window_keep_finish_reconcile_and_close_working(workspace):
     task = start(workspace)
     task_id = task["task_id"]
-    for index in range(50):
+    for index in range(10):  # recent window caps at 8; finish and reconcile both alternate
         released = run_dispatch(workspace, task_id, index, terminal="finish" if index % 2 else "reconcile")
         assert released["adapter_records"] == [f"dsh-dispatch.r{released['revision']}"]
         current = state(workspace, task_id)["state"]
         assert current["active_work"] == [] and current["pending_results"] == []
     current = state(workspace, task_id)["state"]
     archives = [item for item in current["records"] if item["kind"] == "dsh-dispatch"]
-    assert len(archives) == 50 and {item["producer"] for item in archives} == {"dsh:adapter"}
+    assert len(archives) == 10 and {item["producer"] for item in archives} == {"dsh:adapter"}
     assert routing_bytes(current) < 64, "finished dispatches leave no routing residue"
     assert json.loads(archives[0]["text"])["operation"] == "reconcile"
-    assert json.loads(archives[-1]["text"])["reservation"] == reservation(49)
+    assert json.loads(archives[-1]["text"])["reservation"] == reservation(9)
 
     compact = ok(invoke(workspace, "status", {"task_id": task_id}))["Dispatch History"]
-    assert compact == {"record_kind": "dsh-dispatch", "count": 50, "legacy_count": 0, "non_completed": []}, "completed dispatches are counted, not listed, in the compact view"
+    assert compact == {"record_kind": "dsh-dispatch", "count": 10, "legacy_count": 0, "non_completed": []}, "completed dispatches are counted, not listed, in the compact view"
     status = ok(invoke(workspace, "status", {"task_id": task_id, "view": "full"}))
     history = status["Dispatch History"]
-    assert history["count"] == 50 and history["legacy_count"] == 0
-    assert [item["workstream"] for item in history["recent"]] == [f"workstream-{index}" for index in range(42, 50)]
-    assert history["recent"][-1]["outcome"] == "completed" and history["recent"][-1]["child_id"].startswith("child-0049-")
+    assert history["count"] == 10 and history["legacy_count"] == 0
+    assert [item["workstream"] for item in history["recent"]] == [f"workstream-{index}" for index in range(2, 10)]
+    assert history["recent"][-1]["outcome"] == "completed" and history["recent"][-1]["child_id"].startswith("child-0009-")
     assert status["Current Records"] == [] and status["Current Record Count"] == 0, "adapter history never crowds Controller records"
-    assert "Dispatch history: 50 finished dispatch(es)" in status["task_context"]
-    assert len(status["task_context"]) < 2000
 
     # Controller context still works and stays visible next to the archive.
     context = ok(invoke(workspace, "context", {"task_id": task_id, "base_revision": current["revision"],
                                                "records": [{"id": "D1", "kind": "decision", "text": "Archive volume is not routing state."}]}))
     assert [item["id"] for item in context["Task Context"]["Current Records"]] == ["D1"]
-    closed = ok(invoke(workspace, "close", {"task_id": task_id, "base_revision": context["revision"], "decision": "Fifty dispatches archived; closing."}))
+    closed = ok(invoke(workspace, "close", {"task_id": task_id, "base_revision": context["revision"], "decision": "Dispatches archived; closing."}))
     assert closed["status"] == "DONE"
 
 

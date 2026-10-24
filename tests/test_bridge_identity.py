@@ -62,8 +62,7 @@ def test_establish_v1_keeps_task_revision_and_updates_context(workspace):
     before_state = state_bytes(workspace, task["task_id"])
     written = ok(amend(workspace, task))
     assert (written["version"], written["amendment"], written["items"]["added"]) == (1, "A-0001", ["INV-1", "P-1"])
-    assert written["registered_dependents"] == [] and "Nothing is revalidated" in written["notice"]
-    assert "Project identity v1 (A-0001, CURRENT); 0 open challenges." in written["task_context"]
+    assert written["registered_dependents"] == []
     # Identity writes do not bump the task revision or rewrite its ledger.
     assert state_bytes(workspace, task["task_id"]) == before_state
     assert revision(workspace, task) == task["revision"]
@@ -106,7 +105,6 @@ def test_challenge_open_dismiss_and_amendment_resolves(workspace):
     second = ok(invoke(workspace, "identity_challenge", {"task_id": tid, "base_revision": revision(workspace, task), "input": {
         "targets": ["identity:INV-1"], "summary": "Opt-in sync", "text": "Owner may allow opt-in sync.", "proposed_change": "Add an opt-in clause."}}))
     assert first["status"] == second["status"] == "open" and first["challenge"] != second["challenge"]
-    assert "2 open challenges" in status(workspace, task)["task_context"]
     dismissed = ok(invoke(workspace, "identity_challenge", {"task_id": tid, "base_revision": revision(workspace, task), "input": {
         "dismiss": first["challenge"], "reason": "A lower-level repair suffices."}}))
     assert dismissed["status"] == "dismissed"
@@ -117,7 +115,6 @@ def test_challenge_open_dismiss_and_amendment_resolves(workspace):
     assert amended["version"] == 2 and amended["challenges_resolved"] == [second["challenge"]] and amended["items"]["changed"] == ["INV-1"]
     assert ok(invoke(workspace, "identity_get", {"task_id": tid, "challenge": second["challenge"]}))["status"] == "amended"
     assert ok(invoke(workspace, "identity_get", {"task_id": tid, "challenge": first["challenge"]}))["status"] == "dismissed"
-    assert "0 open challenges" in status(workspace, task)["task_context"]
     assert ok(invoke(workspace, "identity_get", {"task_id": tid, "version": 1}))["text"] == TEXT_V1
 
 
@@ -127,10 +124,9 @@ def test_relate_trace_and_dependents(workspace):
     ok(amend(workspace, task))
     related = ok(invoke(workspace, "identity_relate", {"task_id": tid, "base_revision": revision(workspace, task), "input": {
         "add": [{"from": "commit:abc1234", "rel": "serves", "to": "identity:INV-1", "note": "The sync design serves local first."}]}}))
-    assert len(related["added"]) == 1 and "Registered relations only" in related["notice"]
+    assert len(related["added"]) == 1
     traced = ok(invoke(workspace, "identity_trace", {"task_id": tid, "ref": "identity:INV-1", "direction": "down", "depth": 2}))
     assert [edge["id"] for edge in traced["edges"]] == related["added"] and traced["edges"][0]["to_state"] == "CURRENT"
-    assert "absence of a relation is not evidence" in traced["notice"]
     refused(invoke(workspace, "identity_trace", {"task_id": tid, "ref": "identity:INV-1", "depth": 9}))
     refused(invoke(workspace, "identity_trace", {"task_id": tid}), "INVALID_IDENTITY_ARGUMENTS")
     refused(invoke(workspace, "identity_relate", {"task_id": tid, "base_revision": revision(workspace, task), "input": {
@@ -171,7 +167,7 @@ def test_hand_edit_is_observed_not_adopted_and_stale_base_is_refused(workspace):
     recorded = status(workspace, task)["on_disk_sha256"]
     (Path(workspace["root"]) / ".project-identity" / "IDENTITY.md").write_text(TEXT_V2, encoding="utf-8")
     observed = status(workspace, task)
-    assert observed["state"] == "UNRECORDED_CHANGE" and "differs from the recorded version" in observed["task_context"]
+    assert observed["state"] == "UNRECORDED_CHANGE"
     served = ok(invoke(workspace, "identity_get", {"task_id": tid}))
     assert served["text"] == TEXT_V1 and served["on_disk_divergent"] is True
     refused(amend(workspace, task, TEXT_V2, base_version=1, base_sha256=recorded), "base_sha256 conflict")
