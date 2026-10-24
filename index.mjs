@@ -343,7 +343,7 @@ export function apply(ctx, config) {
       const { task_id, base_revision, ...rest } = args
       return bridge(agent, 'identity_relate', { task_id, base_revision, input: rest }, signal)
     })
-  register(TOOL_NAMES[14], 'Controller records, retracts or lists project identity basis notes (Core 0.5.2): action add records the user's verbatim words (quote, optional kind, one-line context, refs) when they explicitly state the project's long-term purpose, direction, constraint or non-goal, or explicitly decide or reject one; retract (retract id, reason) withdraws a wrong note; list shows notes (include_retracted optional). Needs no ACTIVE task; a note is not an identity amendment.',
+  register(TOOL_NAMES[14], 'Controller records, retracts or lists project identity basis notes (Core 0.5.2): action add records the user\'s verbatim words (quote, optional kind, one-line context, refs) when they explicitly state the project\'s long-term purpose, direction, constraint or non-goal, or explicitly decide or reject one; retract (retract id, reason) withdraws a wrong note; list shows notes (include_retracted optional). Needs no ACTIVE task; a note is not an identity amendment.',
     identityNoteSchema, (args, agent, signal) => {
       const { action, include_retracted, ...rest } = args
       const allowed = { add: ['quote', 'kind', 'context', 'refs'], retract: ['retract', 'reason'], list: [] }[action]
@@ -351,7 +351,7 @@ export function apply(ctx, config) {
       if (stray.length || missing.length || (include_retracted !== undefined && action !== 'list')) throw new Error(`THALIRIS_INVALID_ARGUMENTS: identity note ${action} does not accept ${stray.join(', ') || 'these arguments'} or lacks ${missing.join(', ') || 'none'}`)
       return action === 'list' ? bridge(agent, 'identity_note_list', include_retracted === undefined ? {} : { include_retracted }, signal) : bridge(agent, 'identity_note', { input: rest }, signal)
     })
-  register(TOOL_NAMES[15], 'Controller sets whether Thaliris may proactively offer to compose a project identity, only on the user's words: setting off or on (or clear to remove the setting) at scope session, workspace, project or global. Needs no ACTIVE task; it suppresses only close-time offers.',
+  register(TOOL_NAMES[15], 'Controller sets whether Thaliris may proactively offer to compose a project identity, only on the user\'s words: setting off or on (or clear to remove the setting) at scope session, workspace, project or global. Needs no ACTIVE task; it suppresses only close-time offers.',
     identitySuggestSchema, (args, agent, signal) => bridge(agent, 'identity_suggest', args, signal))
   register(EVIDENCE_TOOLS[0], 'Record one already discovered local fact that changes your conclusion, local acceptance or a critical UNKNOWN, with source refs. The adapter binds task, handoff, candidate and requirement refs; do not supply them.',
     object({ id: string, text: string, source_refs: strings, sources: { type: 'array', items: sourceSchema }, observed_state: string }, ['id', 'text', 'source_refs']), async (args, agent, signal) => {
