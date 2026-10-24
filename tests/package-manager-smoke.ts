@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { boot, createRuntimeResolution, initProfile, PluginPackages, readProfilePatches, readProfileManifest, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
 import Hmr from '@deepseek-ai/dsh-hmr'
@@ -56,12 +56,17 @@ writeFileSync(anchor, JSON.stringify({ name: 'thaliris-isolated-installation', p
 mkdirSync(profileDirectory, { recursive: true })
 writeFileSync(join(profileDirectory, '.npmrc'), 'auto-install-peers=false\noffline=true\n')
 initProfile(profileDirectory, ['core'])
+// The fixture bundle hosting the native Plugin Manager is a declared linked
+// dependency: profile installs (pnpm) prune undeclared node_modules entries.
+const coreSource = join(home, 'core-bundle')
 const core = join(profileDirectory, 'node_modules', 'core')
-mkdirSync(core, { recursive: true })
-writeFileSync(join(core, 'package.json'), JSON.stringify({ name: 'core', version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
-writeFileSync(join(core, 'cordis.patch.yml'), JSON.stringify([{ insert: [{ id: 'manager', name: 'cordis:manager' }] }]))
+mkdirSync(coreSource, { recursive: true })
+writeFileSync(join(coreSource, 'package.json'), JSON.stringify({ name: 'core', version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+writeFileSync(join(coreSource, 'cordis.patch.yml'), JSON.stringify([{ insert: [{ id: 'manager', name: 'cordis:manager' }] }]))
+mkdirSync(join(profileDirectory, 'node_modules'), { recursive: true })
+symlinkSync(coreSource, core, 'junction')
 const profileManifest = readProfileManifest('product', profileDirectory)
-profileManifest.dependencies = {}
+profileManifest.dependencies = { core: `link:${coreSource.replaceAll(sep, '/')}` }
 writeFileSync(join(profileDirectory, 'package.json'), JSON.stringify(profileManifest, null, 2))
 writeFileSync(join(profileDirectory, 'cordis.yml'), '[]\n')
 
