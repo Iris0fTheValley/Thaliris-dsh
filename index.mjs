@@ -9,7 +9,8 @@ export const name = 'thaliris-dsh'
 export const inject = ['agents', 'systemPrompt', 'tools', 'subagents', 'subprocess', 'workspaceRegistry', 'sessionPersistence', 'llm']
 export const TOOL_NAMES = Object.freeze(['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
   'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
-  'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate'])
+  'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate',
+  'thaliris_task_identity_note', 'thaliris_task_identity_suggest'])
 export const MEMORY_TOOLS = Object.freeze(['thaliris_memory_read', 'thaliris_memory_search', 'thaliris_memory_propose'])
 /** Granted by the adapter only to a child whose dispatch carries an evidence association. */
 export const EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])
@@ -34,6 +35,9 @@ const identityAmendSchema = object({ ...identitySchema, base_version: { type: 'i
 const identityChallengeSchema = object({ ...identitySchema, targets: limited(16), summary: string, text: string, evidence_refs: limited(64), proposed_change: string, dismiss: string, reason: string }, Object.keys(identitySchema))
 const identityRelateSchema = object({ ...identitySchema, add: { type: 'array', maxItems: 64, items: object({ from: string, rel: { type: 'string', enum: ['serves', 'supports', 'challenges', 'supersedes'] }, to: string, note: string }, ['from', 'rel', 'to']) },
   retract: { type: 'array', maxItems: 64, items: object({ id: string, reason: string }) } }, Object.keys(identitySchema))
+const identityNoteSchema = object({ action: { type: 'string', enum: ['add', 'retract', 'list'] }, quote: string, kind: { type: 'string', enum: ['purpose', 'direction', 'constraint', 'non-goal', 'decision', 'rejection', 'material', 'other'] }, context: string, refs: limited(16),
+  retract: string, reason: string, include_retracted: { type: 'boolean' } }, ['action'])
+const identitySuggestSchema = object({ scope: { type: 'string', enum: ['session', 'workspace', 'project', 'global'] }, setting: { type: 'string', enum: ['on', 'off', 'clear'] } })
 const identityReadSchema = object({ task_id: string, action: { type: 'string', enum: ['status', 'get', 'trace'] }, version: { type: 'integer', minimum: 1 }, items: limited(64), amendment: string, challenge: string,
   ref: string, direction: { type: 'string', enum: ['up', 'down', 'both'] }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, ['task_id', 'action'])
 const roleDigest = role => createHash('sha256').update(JSON.stringify(role)).digest('hex').slice(0, 16)
@@ -339,6 +343,16 @@ export function apply(ctx, config) {
       const { task_id, base_revision, ...rest } = args
       return bridge(agent, 'identity_relate', { task_id, base_revision, input: rest }, signal)
     })
+  register(TOOL_NAMES[14], 'Controller records, retracts or lists project identity basis notes (Core 0.5.2): action add records the user's verbatim words (quote, optional kind, one-line context, refs) when they explicitly state the project's long-term purpose, direction, constraint or non-goal, or explicitly decide or reject one; retract (retract id, reason) withdraws a wrong note; list shows notes (include_retracted optional). Needs no ACTIVE task; a note is not an identity amendment.',
+    identityNoteSchema, (args, agent, signal) => {
+      const { action, include_retracted, ...rest } = args
+      const allowed = { add: ['quote', 'kind', 'context', 'refs'], retract: ['retract', 'reason'], list: [] }[action]
+      const stray = Object.keys(rest).filter(key => !allowed.includes(key)), missing = allowed.filter(key => key === 'quote' || key === 'retract' || key === 'reason' ? rest[key] === undefined : false)
+      if (stray.length || missing.length || (include_retracted !== undefined && action !== 'list')) throw new Error(`THALIRIS_INVALID_ARGUMENTS: identity note ${action} does not accept ${stray.join(', ') || 'these arguments'} or lacks ${missing.join(', ') || 'none'}`)
+      return action === 'list' ? bridge(agent, 'identity_note_list', include_retracted === undefined ? {} : { include_retracted }, signal) : bridge(agent, 'identity_note', { input: rest }, signal)
+    })
+  register(TOOL_NAMES[15], 'Controller sets whether Thaliris may proactively offer to compose a project identity, only on the user's words: setting off or on (or clear to remove the setting) at scope session, workspace, project or global. Needs no ACTIVE task; it suppresses only close-time offers.',
+    identitySuggestSchema, (args, agent, signal) => bridge(agent, 'identity_suggest', args, signal))
   register(EVIDENCE_TOOLS[0], 'Record one already discovered local fact that changes your conclusion, local acceptance or a critical UNKNOWN, with source refs. The adapter binds task, handoff, candidate and requirement refs; do not supply them.',
     object({ id: string, text: string, source_refs: strings, sources: { type: 'array', items: sourceSchema }, observed_state: string }, ['id', 'text', 'source_refs']), async (args, agent, signal) => {
       const grant = childGrants.get(agent)

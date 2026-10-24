@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.1、Codex adapter 0.5.1、Claude Code plugin 0.4.1、DSH plugin 0.3.1。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.1、Claude Code plugin 0.4.1、DSH plugin 0.3.2。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -209,7 +209,7 @@ thaliris-core --root . --task-id "$TASK_ID" task-status
 
 ## DSH 原生集成
 
-@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.1，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
+@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.2，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
 
 DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不授予工具且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
 
@@ -226,6 +226,7 @@ DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Me
 | `thaliris_task_mode` | 在真实的人类指令下切换 execution mode，使用 revision 与 authority 摘要 CAS，且需先解决进行中的工作 |
 | `thaliris_task_identity` | 读取项目 identity（`action`：`status`；`get` 某个版本、选定条目、单个 amendment 或 challenge；`trace` 已登记关系）；没有 identity 是正常情况 |
 | `thaliris_task_identity_amend` / `thaliris_task_identity_challenge` / `thaliris_task_identity_relate` | 依据人类所有者的决定记录显式 amendment、记录或驳回 challenge、登记或撤回目的关系（仅 Controller） |
+| `thaliris_task_identity_note` / `thaliris_task_identity_suggest` | Core 0.5.2：记录、撤回或列出用户明确长期表述的原话 basis note；按 session、workspace、project 或 global 范围开关主动提议偏好（仅 Controller；无需 ACTIVE task） |
 
 带 evidence association 派发的子代理会额外获得 `thaliris_observe`；adapter 把每条 observation 绑定到该次派发的 handoff、candidate、requirement refs 以及已绑定的原生子代理，派发结束即失去该授权。Controller 不能代写子代理的 observation，子代理也不能登记、判断或切换模式。已派发的子代理在 Settings 之后变更时仍保持派发时绑定的角色（提示词、工具、memory 授权）。模式切换不会扩大子代理的角色或授权；delegated 派发要求 delegated 模式。
 
@@ -250,7 +251,7 @@ npm pack
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.2.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
 ~~~
 
 生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。
