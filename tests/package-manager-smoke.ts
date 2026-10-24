@@ -95,7 +95,16 @@ let stage = 'boot'
 const assertApplied = (result: { application: string; error?: unknown }, action: string): void => {
   assert.equal(result.application, 'applied', `${action} failed: ${JSON.stringify(result)}`)
 }
-const manager = async () => owner!.pluginManager
+const manager = async () => {
+  const service = owner!.get('pluginManager')
+  if (service) return service
+  // Diagnose an absent native Plugin Manager instead of failing on undefined.
+  await (owner as any).loader.await?.()
+  const entry = (owner as any).loader.resolve?.('manager')
+  const fiber = entry?.fiber
+  assert.ok(owner!.get('pluginManager'), `native Plugin Manager unavailable: ${JSON.stringify({ entry: !!entry, disabled: entry?.disabled, state: fiber?.state, error: fiber?.error ? String(fiber.error?.stack ?? fiber.error) : undefined, inject: fiber?.inject && Object.keys(fiber.inject) })}`)
+  return owner!.get('pluginManager')!
+}
 const bundle = async (name: string) => (await (await manager()).listBundles()).find(row => row.name === name)
 const install = async (name: string, filename: string) => {
   const result = await (await manager()).installBundle(`file:./packages/${filename}`, { enabled: false })
