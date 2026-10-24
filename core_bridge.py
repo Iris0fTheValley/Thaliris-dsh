@@ -35,7 +35,8 @@ ADAPTER_PRODUCER = "dsh:adapter"
 # bounded changes_since review hint ride along as additive fields (never a rebase or merge).
 LEGACY_CONFLICT = "TASK_ID_OR_REVISION_CONFLICT"
 CONFLICT_RECOVERY = ("retry the same write once with base_revision = details.current_revision after reading details.changes_since "
-                     "(recent handoffs, observations and judgments, open evidence); a full thaliris_task_status read is not needed")
+                     "(recent handoffs, observations and judgments, open evidence; an approximate hint that can omit items and does not track Active Work, Pending Results, milestone, status or sources) "
+                     "and, if the write still applies, retry once; read compact thaliris_task_status when you need Active Work/Pending Results or anything the hint does not cover")
 STATUS_VIEWS = ("compact", "full")
 COMPACT_RECORD_CHARS = 200
 COMPACT_NON_COMPLETED_MAX = 4
