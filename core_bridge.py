@@ -24,6 +24,9 @@ JUDGMENT_FIELDS = {"id", "candidate", "requirement_ref", "observation_refs", "ou
 # mutations are Controller-only and apply Core's own task-revision CAS.
 IDENTITY_READ_OPERATIONS = frozenset({"identity_status", "identity_get", "identity_trace"})
 IDENTITY_WRITE_OPERATIONS = frozenset({"identity_amend", "identity_challenge", "identity_relate"})
+# Natural formation (Core 0.5.2): basis notes and suggestion preferences are machine-local,
+# Controller-only and need no ACTIVE task; the session key is the native Controller id.
+IDENTITY_FORMATION_OPERATIONS = frozenset({"identity_note", "identity_note_list", "identity_suggest"})
 IDENTITY_GET_FIELDS = frozenset({"version", "items", "amendment", "challenge"})
 IDENTITY_TRACE_FIELDS = frozenset({"direction", "depth"})
 CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"} | IDENTITY_READ_OPERATIONS | IDENTITY_WRITE_OPERATIONS
@@ -119,6 +122,8 @@ def dispatch(request: dict) -> dict:
         if args:
             raise ValueError("INVALID_RESUME_ARGUMENTS")
         return resume(core, AuthorityStore, root, authority_directory, native_id, workspace_id)
+    if operation in IDENTITY_FORMATION_OPERATIONS:
+        return identity_formation(root, native_id, operation, args)
     if operation not in CONTROLLER_OPERATIONS:
         raise ValueError("UNSUPPORTED_BRIDGE_OPERATION")
     task_id = args.get("task_id")
@@ -154,7 +159,7 @@ def dispatch(request: dict) -> dict:
         return {**packet, "Current Records": records, "Current Record Count": total, "Dispatch History": dispatch_history(state),
                 "Authority": authority, "task_context": task_context_text(core, state, root)}
     if operation in IDENTITY_READ_OPERATIONS:
-        return identity_read(core, root, state, operation, args)
+        return identity_read(core, root, state, operation, args, native_id)
     if operation == "observe":
         # Child evidence arrives through the plugin's dispatch grant, never from
         # model-supplied provenance. The bound reservation is the association.
@@ -200,7 +205,8 @@ def dispatch(request: dict) -> dict:
         store.checkpoint()
         result = core.task_close(root, result["revision"], expected_task_id=args["task_id"])
         store.checkpoint()
-        return result
+        offer = identity_offer_line(root, native_id)
+        return {**result, "identity_offer": offer} if offer else result
     allowed = {"task_id", "base_revision", "observation"} | ({"evidence"} if operation == "begin" else set())
     if not {"task_id", "base_revision", "observation"} <= set(args) or set(args) - allowed or not isinstance(args["observation"], str) or not args["observation"].strip() or len(args["observation"]) > 3500:
         raise ValueError("INVALID_NATIVE_OBSERVATION")
@@ -288,14 +294,43 @@ def identity_summary_line(root: Path | None) -> str | None:
         return None
 
 
-def identity_read(core, root: Path, state: dict, operation: str, args: dict) -> dict:
+def identity_offer_line(root: Path, session_key: str) -> str | None:
+    """Core's once-per-note identity offer for a successful task close; any failure means no offer."""
+    try:
+        from thaliris import identity_basis
+        return identity_basis.identity_offer(root, session_key)
+    except Exception:  # noqa: BLE001 - an offer must never disturb a completed close
+        return None
+
+
+def identity_formation(root: Path, native_id: str, operation: str, args: dict) -> dict:
+    """Controller-only basis notes and suggestion preferences (Core 0.5.2); no ACTIVE task is required.
+
+    The actor and session key come from the adapter-bound native Controller id,
+    never from model arguments. Nothing here touches the task ledger.
+    """
+    from thaliris import identity_basis
+    if operation == "identity_note":
+        if set(args) != {"input"} or not isinstance(args["input"], dict):
+            raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+        return identity_basis.identity_note(root, "dsh:" + native_id, args["input"])
+    if operation == "identity_note_list":
+        if set(args) - {"include_retracted"} or type(args.get("include_retracted", False)) is not bool:
+            raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+        return identity_basis.identity_note_list(root, include_retracted=args.get("include_retracted", False))
+    if set(args) != {"scope", "setting"} or not isinstance(args["scope"], str) or not isinstance(args["setting"], str):
+        raise ValueError("INVALID_IDENTITY_ARGUMENTS")
+    return identity_basis.identity_suggest(root, "dsh:" + native_id, args["scope"], args["setting"], session_key=native_id)
+
+
+def identity_read(core, root: Path, state: dict, operation: str, args: dict, native_id: str) -> dict:
     """Read-only Project Identity observation for the selected, authority-checked task."""
     from thaliris import identity
     if operation == "identity_status":
         if set(args) != {"task_id"}:
             raise ValueError("INVALID_IDENTITY_ARGUMENTS")
         # The summary rides along so a changed baseline (for example after a Git pull) refreshes the cached task context.
-        return {**identity.identity_status(root), "task_context": task_context_text(core, state, root)}
+        return {**identity.identity_status(root, session_key=native_id), "task_context": task_context_text(core, state, root)}
     if operation == "identity_get":
         if set(args) - {"task_id"} - IDENTITY_GET_FIELDS:
             raise ValueError("INVALID_IDENTITY_ARGUMENTS")

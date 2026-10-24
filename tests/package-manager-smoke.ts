@@ -64,7 +64,7 @@ writeFileSync(join(profileDirectory, 'package.json'), JSON.stringify(profileMani
 writeFileSync(join(profileDirectory, 'cordis.yml'), '[]\n')
 
 const archives = [
-  ['@thaliris/dsh-plugin', 'thaliris-dsh-plugin-0.3.1.tgz'],
+  ['@thaliris/dsh-plugin', 'thaliris-dsh-plugin-0.3.2.tgz'],
   ['@thaliris/dsh-memory', 'thaliris-dsh-memory-0.1.0.tgz'],
   ['@thaliris/dsh-memory-local', 'thaliris-dsh-memory-local-0.1.0.tgz'],
 ] as const
@@ -207,7 +207,7 @@ try {
   assert.deepEqual([...tools.keys()].sort(), [
     'thaliris_memory_propose', 'thaliris_memory_read', 'thaliris_memory_search', 'thaliris_observe', 'thaliris_reconcile',
     'thaliris_task_close', 'thaliris_task_context', 'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge',
-    'thaliris_task_identity_relate', 'thaliris_task_inspect', 'thaliris_task_judge', 'thaliris_task_mode',
+    'thaliris_task_identity_note', 'thaliris_task_identity_relate', 'thaliris_task_identity_suggest', 'thaliris_task_inspect', 'thaliris_task_judge', 'thaliris_task_mode',
     'thaliris_task_register', 'thaliris_task_start', 'thaliris_task_status', 'thaliris_workstream',
   ])
 
