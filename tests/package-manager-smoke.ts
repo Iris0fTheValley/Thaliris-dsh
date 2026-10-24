@@ -102,9 +102,8 @@ const manager = async () => {
   if (service) return service
   // Diagnose an absent native Plugin Manager instead of failing on undefined.
   await (owner as any).loader.await?.()
-  const entry = (owner as any).loader.resolve?.('manager')
-  const fiber = entry?.fiber
-  assert.ok(owner!.get('pluginManager'), `native Plugin Manager unavailable: ${JSON.stringify({ entry: !!entry, disabled: entry?.disabled, state: fiber?.state, error: fiber?.error ? String(fiber.error?.stack ?? fiber.error) : undefined, inject: fiber?.inject && Object.keys(fiber.inject) })}`)
+  const entries = [...(owner as any).loader.entries()].map((entry: any) => ({ id: entry.id, name: entry.options?.name, disabled: entry.disabled, state: entry.fiber?.state, error: entry.fiber?.error ? String(entry.fiber.error?.stack ?? entry.fiber.error).slice(0, 600) : undefined }))
+  assert.ok(owner!.get('pluginManager'), `native Plugin Manager unavailable: ${JSON.stringify({ startedBundles: profile.startedBundles, patches: readProfilePatches('product', profile as never), entries })}`)
   return owner!.get('pluginManager')!
 }
 const bundle = async (name: string) => (await (await manager()).listBundles()).find(row => row.name === name)
