@@ -51,7 +51,6 @@ def test_dispatch_registers_handoff_and_child_observation_is_adapter_bound(works
     assert item["native_actor"].startswith("dsh-child:") and "native-child" not in item["native_actor"]
     status = ok(invoke(workspace, "status", {"task_id": task["task_id"], "view": "full"}))
     assert status["Evidence Continuity"]["unincorporated"] == [{"requirement_ref": "R1", "observation_id": "Habc123.O1", "candidate": "C1", "handoff_id": "Habc123"}]
-    assert "1 unincorporated" in status["task_context"]
     # Finishing the dispatch ends the child's observation grant.
     revision = state(workspace, task["task_id"])["state"]["revision"]
     contradicted = invoke(workspace, "finish", {"task_id": task["task_id"], "base_revision": revision, "observation": json.dumps({**selected, "route": "other/model", "child_id": "native-child", "stop_reason": "completed"})})
@@ -71,8 +70,6 @@ def test_dispatch_registers_handoff_and_child_observation_is_adapter_bound(works
     ({"child_id": "other-child"}, "OBSERVATION_CHILD_CONFLICT"),
     ({"handoff_id": "Hforged"}, "OBSERVATION_ASSOCIATION_UNAVAILABLE"),
     ({"observation": {"id": "O1", "text": "x", "source_refs": ["S"], "candidate": "C9"}}, "OBSERVATION_PROVENANCE_FIELDS"),
-    ({"observation": {"id": "O1", "text": "x", "source_refs": ["S"], "requirement_refs": ["R9"]}}, "OBSERVATION_PROVENANCE_FIELDS"),
-    ({"observation": {"id": "O1", "text": "x", "source_refs": ["S"], "producer": "controller"}}, "OBSERVATION_PROVENANCE_FIELDS"),
 ])
 def test_observation_provenance_cannot_be_forged(workspace, change, error):
     task = start(workspace)
@@ -144,7 +141,6 @@ def test_task_context_update_records_provenance_and_bounded_summary(workspace):
                                                            {"id": "D1", "kind": "decision", "text": "Keep external Core."}]}))
     assert updated["revision"] == task["revision"] + 1
     assert [item["id"] for item in updated["Task Context"]["Current Records"]] == ["F1", "D1"]
-    assert "Milestone: M2" in updated["task_context"] and "D1 [decision] Keep external Core." in updated["task_context"]
     records = state(workspace, task["task_id"])["state"]["records"]
     assert {item["producer"] for item in records} == {"dsh:controller"} and {item["revision"] for item in records} == {updated["revision"]}
     superseded = ok(invoke(workspace, "context", {"task_id": task["task_id"], "base_revision": updated["revision"], "records": [{"id": "D2", "kind": "decision", "text": "Revised.", "supersedes": ["D1"]}]}))

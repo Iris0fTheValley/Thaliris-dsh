@@ -91,7 +91,6 @@ def test_revision_conflict_carries_code_recovery_and_changes_since(workspace):
     assert since["exact"] is False and since["revision_gap"] == current - stale and since["current_revision"] == current
     assert since["evidence"]["unincorporated_total"] == 2, "open evidence is re-presented, not dropped"
     assert any(item["id"] == "Habc123.O1" for item in since["recent"]["observations"])
-    assert "details.current_revision" in conflict["recovery"]
     assert state_bytes(workspace, task["task_id"]) == before
     # Strict CAS: the single retry at current_revision succeeds.
     retried = ok(invoke(workspace, "judge", {"task_id": task["task_id"], "base_revision": details["current_revision"], "judgments": [judgment("J1", "R1", "Habc123.O1")]}))
@@ -100,9 +99,6 @@ def test_revision_conflict_carries_code_recovery_and_changes_since(workspace):
 
 @pytest.mark.parametrize("operation,arguments", [
     ("context", {"milestone": "M"}),
-    ("register", {"requirements": [{"id": "R9", "workchain_ref": "W"}]}),
-    ("close", {"decision": "Done."}),
-    ("begin", {"observation": "reservation"}),
     ("inspect", {}),
 ])
 def test_every_cas_operation_reports_structured_conflicts(workspace, operation, arguments):

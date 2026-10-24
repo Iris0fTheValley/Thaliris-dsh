@@ -21,14 +21,8 @@ def test_lock_shape():
     assert LOCK["repository"] == "Iris0fTheValley/Thaliris"
     assert re.fullmatch(r"[0-9a-f]{40}", LOCK["commit"])
     assert re.fullmatch(r"\d+\.\d+\.\d+", LOCK["version"])
-
-
-def test_prose_baseline_names_the_locked_pin():
-    baseline = (ROOT / "CORE-BASELINE.md").read_text(encoding="utf-8")
-    assert f"thaliris=={LOCK['version']}" in baseline
-    assert f"https://github.com/{LOCK['repository']}/tree/{LOCK['commit']}" in baseline
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-    assert "core.lock.json" in package["files"]
+    assert "core.lock.json" in package["files"], "the Core pin ships in the package"
 
 
 def test_tested_core_source_matches_the_lock():

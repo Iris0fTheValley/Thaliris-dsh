@@ -1,6 +1,6 @@
 # Runtime capability observations
 
-Baseline: upstream DSH `639ed015397290b3745d163aafe02ffee4aa3f84`.
+Baseline: upstream DSH `5badb15009ae1756c3afe0ae0cef1faafc290ccc`.
 
 | Surface | Verified behavior | Limit |
 |---|---|---|

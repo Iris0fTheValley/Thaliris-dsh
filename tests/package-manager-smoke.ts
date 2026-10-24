@@ -63,11 +63,12 @@ profileManifest.dependencies = {}
 writeFileSync(join(profileDirectory, 'package.json'), JSON.stringify(profileManifest, null, 2))
 writeFileSync(join(profileDirectory, 'cordis.yml'), '[]\n')
 
-const archives = [
-  ['@thaliris/dsh-plugin', 'thaliris-dsh-plugin-0.3.2.tgz'],
-  ['@thaliris/dsh-memory', 'thaliris-dsh-memory-0.1.0.tgz'],
-  ['@thaliris/dsh-memory-local', 'thaliris-dsh-memory-local-0.1.0.tgz'],
-] as const
+// Archive names follow each package's own manifest version, as `npm pack` names them.
+const archiveFor = (manifestPath: string) => {
+  const manifest = JSON.parse(readFileSync(new URL(manifestPath, import.meta.url), 'utf8'))
+  return [manifest.name as string, `${manifest.name.replace(/^@/, '').replace('/', '-')}-${manifest.version}.tgz`] as const
+}
+const archives = [archiveFor('../package.json'), archiveFor('../components/memory/package.json'), archiveFor('../components/memory-local/package.json')]
 for (const [, filename] of archives) {
   const path = join(packDirectory, filename)
   assert.ok(existsSync(path), `missing local package archive: ${path}`)

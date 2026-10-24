@@ -374,7 +374,9 @@ async function evidenceContextAndMode() {
     },
     (options: any) => {
       const recorded = lastTool(options)
-      assert.match(recorded.task_context, /CONTEXT_DECISION_SENTINEL/)
+      assert.equal(recorded.task_context, undefined, 'the dynamic-context summary is not echoed in the tool result')
+      assert.deepEqual(recorded['Task Context']['Current Records'], [{ id: 'D1', kind: 'decision' }], 'the result reports structured record ids only')
+      assert.ok(JSON.stringify(options.messages).includes('CONTEXT_DECISION_SENTINEL'), 'the recorded text reaches the root as dynamic context')
       return toolCallResponse('work', names[2], { task_id: taskId, base_revision: recorded.revision, workstream: 'evidence', role: 'Implementer', handoff, evidence: { candidate: 'C1', requirement_refs: ['R1'] } })
     },
     (options: any) => {
