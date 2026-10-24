@@ -49,7 +49,7 @@ def test_dispatch_registers_handoff_and_child_observation_is_adapter_bound(works
     item = continuity["observations"][0]
     assert item["producer"] == "handoff:Habc123" and item["requirement_refs"] == ["R1"] and item["source_refs"] == ["Habc123.S1"]
     assert item["native_actor"].startswith("dsh-child:") and "native-child" not in item["native_actor"]
-    status = ok(invoke(workspace, "status", {"task_id": task["task_id"]}))
+    status = ok(invoke(workspace, "status", {"task_id": task["task_id"], "view": "full"}))
     assert status["Evidence Continuity"]["unincorporated"] == [{"requirement_ref": "R1", "observation_id": "Habc123.O1", "candidate": "C1", "handoff_id": "Habc123"}]
     assert "1 unincorporated" in status["task_context"]
     # Finishing the dispatch ends the child's observation grant.
@@ -63,7 +63,7 @@ def test_dispatch_registers_handoff_and_child_observation_is_adapter_bound(works
     revision = state(workspace, task["task_id"])["state"]["revision"]
     judged = ok(invoke(workspace, "judge", {"task_id": task["task_id"], "base_revision": revision, "judgment": {
         "id": "J1", "candidate": "C1", "requirement_ref": "R1", "observation_refs": ["Habc123.O1"], "outcome": "satisfied", "reasoning": "Observation supports R1."}}))
-    assert judged["Evidence Continuity"]["unincorporated_total"] == 0
+    assert judged["evidence"]["unincorporated_total"] == 0 and judged["appended"] == ["J1"]
     assert state(workspace, task["task_id"])["state"]["evidence_continuity"]["judgments"][0]["producer"] == "dsh:controller"
 
 
@@ -129,7 +129,8 @@ def test_controller_cannot_register_handoffs_or_assert_judgment_identity(workspa
     forged = invoke(workspace, "judge", {"task_id": task["task_id"], "base_revision": revision, "judgment": {"id": "J1", "producer": "child", "candidate": "C1"}})
     assert not forged["ok"] and "INVALID_JUDGE_ARGUMENTS" in forged["error"]
     stale = invoke(workspace, "register", {"task_id": task["task_id"], "base_revision": revision + 5, "requirements": [{"id": "R1", "workchain_ref": "W"}]})
-    assert not stale["ok"] and "REVISION_CONFLICT" in stale["error"]
+    assert not stale["ok"] and stale["error"] == "TASK_ID_OR_REVISION_CONFLICT" and stale["code"] == "TASK_REVISION_CONFLICT"
+    assert stale["details"]["current_revision"] == revision and stale["details"]["base_revision"] == revision + 5 and stale["details"]["mismatch"] == "revision"
     assert state_bytes(workspace, task["task_id"]) == before
     other = invoke(workspace, "register", {"task_id": task["task_id"], "base_revision": revision, "requirements": [{"id": "R1", "workchain_ref": "W"}]}, native_controller_id="child-id")
     assert not other["ok"] and "MISMATCH" in other["error"]

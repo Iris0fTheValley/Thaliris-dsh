@@ -52,7 +52,9 @@ def test_fifty_finished_dispatches_keep_finish_reconcile_and_close_working(works
     assert json.loads(archives[0]["text"])["operation"] == "reconcile"
     assert json.loads(archives[-1]["text"])["reservation"] == reservation(49)
 
-    status = ok(invoke(workspace, "status", {"task_id": task_id}))
+    compact = ok(invoke(workspace, "status", {"task_id": task_id}))["Dispatch History"]
+    assert compact == {"record_kind": "dsh-dispatch", "count": 50, "legacy_count": 0, "non_completed": []}, "completed dispatches are counted, not listed, in the compact view"
+    status = ok(invoke(workspace, "status", {"task_id": task_id, "view": "full"}))
     history = status["Dispatch History"]
     assert history["count"] == 50 and history["legacy_count"] == 0
     assert [item["workstream"] for item in history["recent"]] == [f"workstream-{index}" for index in range(42, 50)]

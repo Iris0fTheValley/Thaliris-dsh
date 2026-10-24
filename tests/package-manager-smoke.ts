@@ -64,7 +64,7 @@ writeFileSync(join(profileDirectory, 'package.json'), JSON.stringify(profileMani
 writeFileSync(join(profileDirectory, 'cordis.yml'), '[]\n')
 
 const archives = [
-  ['@thaliris/dsh-plugin', 'thaliris-dsh-plugin-0.3.0.tgz'],
+  ['@thaliris/dsh-plugin', 'thaliris-dsh-plugin-0.3.1.tgz'],
   ['@thaliris/dsh-memory', 'thaliris-dsh-memory-0.1.0.tgz'],
   ['@thaliris/dsh-memory-local', 'thaliris-dsh-memory-local-0.1.0.tgz'],
 ] as const

@@ -202,9 +202,9 @@ DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Me
 | `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | 确立选定意图、查看显式选定的任务、在 Controller 自行判断后记录机械 DONE |
 | `thaliris_workstream` | 以角色、有界 handoff、可选模型路由与 reasoning effort（Controller 在隔离与分工之后，选择适合该工作集的最便宜允许路由和最低 effort）、可选 evidence association 派发一个全新子代理；reservation 记录所选路由和派发时角色的摘要 |
 | `thaliris_reconcile` | 依据原生终止证据检查或调和崩溃遗留的 reservation；UNKNOWN 不会自动释放 |
-| `thaliris_task_status` | 有界状态：当前记录、dispatch 历史（已结束的 dispatch 是 append-only 的 `dsh-dispatch` Core record，不占用 routing state）、authority 摘要与模式、evidence continuity（未纳入的 observation、未解决的 judgment） |
+| `thaliris_task_status` | 默认紧凑状态（revision、routing、计数、有界记录、未完成的 dispatch、authority 摘要与模式、未决 evidence 摘要）；`view: "full"` 返回完整状态包，`since_revision` 附加有界变更提示。已结束的 dispatch 是 append-only 的 `dsh-dispatch` Core record，不占用 routing state |
 | `thaliris_task_context` | 记录事实、决策、进展、待办与 milestone；压缩或恢复后，有界摘要会作为 DSH dynamic context 重新提供 |
-| `thaliris_task_register` / `thaliris_task_judge` | 登记不透明的需求；以精确的 observation 引用记录需求判断 |
+| `thaliris_task_register` / `thaliris_task_judge` | 登记不透明的需求；以精确的 observation 引用记录需求判断，可单条或以 `judgments` 原子批量提交。结果携带新 revision 与未决 evidence 摘要；revision 冲突会返回 Core 的 code、recovery 与 `changes_since` |
 | `thaliris_task_mode` | 在真实的人类指令下切换 execution mode，使用 revision 与 authority 摘要 CAS，且需先解决进行中的工作 |
 | `thaliris_task_identity` | 读取项目 identity（`action`：`status`；`get` 某个版本、选定条目、单个 amendment 或 challenge；`trace` 已登记关系）；没有 identity 是正常情况 |
 | `thaliris_task_identity_amend` / `thaliris_task_identity_challenge` / `thaliris_task_identity_relate` | 依据人类所有者的决定记录显式 amendment、记录或驳回 challenge、登记或撤回目的关系（仅 Controller） |
@@ -232,7 +232,7 @@ npm pack
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
 ~~~
 
 生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。

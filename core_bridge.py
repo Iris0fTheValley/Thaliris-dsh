@@ -31,6 +31,14 @@ CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconc
 # them to 8 KiB together). Finished dispatches, consumed memory proposals and
 # legacy history move to append-only Core records with adapter provenance.
 ADAPTER_PRODUCER = "dsh:adapter"
+# Strict CAS keeps its historical error text; Core's stable code, a recovery hint and a
+# bounded changes_since review hint ride along as additive fields (never a rebase or merge).
+LEGACY_CONFLICT = "TASK_ID_OR_REVISION_CONFLICT"
+CONFLICT_RECOVERY = ("retry the same write once with base_revision = details.current_revision after reading details.changes_since "
+                     "(recent handoffs, observations and judgments, open evidence); a full thaliris_task_status read is not needed")
+STATUS_VIEWS = ("compact", "full")
+COMPACT_RECORD_CHARS = 200
+COMPACT_NON_COMPLETED_MAX = 4
 DISPATCH_KIND = "dsh-dispatch"
 LEGACY_KIND = "dsh-legacy-pending"
 APPROVAL_KIND = "dsh-memory-approval"
@@ -122,20 +130,28 @@ def dispatch(request: dict) -> dict:
         raise ValueError("DSH_CONTROLLER_MISMATCH_OR_INACTIVE")
     state = core.task_show(root)["state"]
     if operation == "inspect":
-        if set(args) != {"task_id"}:
+        if set(args) - {"task_id", "base_revision"}:
             raise ValueError("INVALID_INSPECT_ARGUMENTS")
+        if "base_revision" in args:
+            # Reconcile uses this to refuse a stale revision with the structured conflict details.
+            check_cas(core, state, args)
         return {"ok": True, "state": state, "contract": record["contract"], "authority_sha256": authority_digest(store), "task_context": task_context_text(core, state, root)}
     if operation == "status":
-        if set(args) - {"task_id", "evidence_offset"}:
+        if set(args) - {"task_id", "evidence_offset", "view", "since_revision"}:
             raise ValueError("INVALID_STATUS_ARGUMENTS")
         offset = args.get("evidence_offset", 0)
-        if type(offset) is not int or offset < 0:
+        view, since = args.get("view", "compact"), args.get("since_revision")
+        if type(offset) is not int or offset < 0 or view not in STATUS_VIEWS or (since is not None and (type(since) is not int or since < 0)):
             raise ValueError("INVALID_STATUS_ARGUMENTS")
-        packet = core.task_status(root, offset)
+        packet = core.task_status_packet(state, offset, view=view, since_revision=since)
+        authority = {"status": record["status"], "execution_mode": record["contract"]["execution_mode"], "sha256": authority_digest(store)}
+        if view == "compact":
+            records, total = current_records(state, text_chars=COMPACT_RECORD_CHARS, compact=True)
+            return {**packet, "Current Records": records, "Current Record Count": total, "Dispatch History": dispatch_history_compact(state),
+                    "Authority": authority, "task_context": task_context_text(core, state, root)}
         records, total = current_records(state)
         return {**packet, "Current Records": records, "Current Record Count": total, "Dispatch History": dispatch_history(state),
-                "Authority": {"status": record["status"], "execution_mode": record["contract"]["execution_mode"], "sha256": authority_digest(store)},
-                "task_context": task_context_text(core, state, root)}
+                "Authority": authority, "task_context": task_context_text(core, state, root)}
     if operation in IDENTITY_READ_OPERATIONS:
         return identity_read(core, root, state, operation, args)
     if operation == "observe":
@@ -158,8 +174,7 @@ def dispatch(request: dict) -> dict:
         result = approval(core, root, native_id, state, args)
         store.checkpoint()
         return result
-    if args.get("task_id") != state["task_id"] or type(args.get("base_revision")) is not int or args["base_revision"] != state["revision"]:
-        raise ValueError("TASK_ID_OR_REVISION_CONFLICT")
+    check_cas(core, state, args)
     if operation in IDENTITY_WRITE_OPERATIONS:
         return identity_write(core, root, native_id, state, operation, args)
     if operation == "context":
@@ -215,8 +230,46 @@ def dispatch(request: dict) -> dict:
         # append-only dispatch record; routing state keeps no history.
         archive = {"operation": operation, "reservation": parse_json(state["active_work"][0], raw=True), "result": parse_json(args["observation"], raw=True)}
         result = write(core, root, native_id, state, {"active_work": []}, [(DISPATCH_KIND, compact(archive), ADAPTER_PRODUCER)])
+        # Still-open evidence returns with the release, so the Controller needs no separate status read.
+        result["evidence"] = core.evidence_summary(core.task_show(root)["state"])
     store.checkpoint()
     return result
+
+
+def cas_conflict(core, state: dict, args: dict):
+    """Structured strict-CAS refusal, or None when task id and revision both match.
+
+    The error text stays the historical TASK_ID_OR_REVISION_CONFLICT; Core's code,
+    a recovery hint and bounded details are additive, and details.mismatch says
+    which half failed. Nothing is rebased or merged.
+    """
+    from thaliris.errors import ThalirisError, TASK_IDENTITY_CONFLICT
+    if args.get("task_id") != state["task_id"]:
+        return ThalirisError(TASK_IDENTITY_CONFLICT, LEGACY_CONFLICT, recovery="select the intended task_id; the revision was not compared",
+                             details={"mismatch": "task_id", "expected_task_id": args.get("task_id"), "task_id": state["task_id"], "current_revision": state["revision"]})
+    if type(args.get("base_revision")) is int and args["base_revision"] == state["revision"]:
+        return None
+    conflict = core.revision_conflict(state, args.get("base_revision"))
+    return ThalirisError(conflict.code, LEGACY_CONFLICT, recovery=CONFLICT_RECOVERY, details={"mismatch": "revision", **(conflict.details or {})})
+
+
+def check_cas(core, state: dict, args: dict) -> None:
+    conflict = cas_conflict(core, state, args)
+    if conflict is not None:
+        raise conflict
+
+
+def error_response(error: BaseException) -> dict:
+    """Bridge failure envelope: the historical text plus Core's code, recovery and details when present."""
+    response = {"protocol": 1, "ok": False, "error": str(error)}
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and callable(getattr(error, "to_dict", None)):
+        structured = error.to_dict()
+        if structured.get("code") == "TASK_REVISION_CONFLICT":
+            # Core's own CAS fired inside a locked write (a race after the bridge check): same text, no CLI hint.
+            structured = {**structured, "error": LEGACY_CONFLICT, "recovery": CONFLICT_RECOVERY}
+        response.update({key: structured[key] for key in ("error", "code", "recovery", "details") if key in structured})
+    return response
 
 
 def identity_summary_line(root: Path | None) -> str | None:
@@ -421,7 +474,31 @@ def dispatch_history(state: dict, limit: int = 8) -> dict:
             "recent": [summary(item) for item in archives[-limit:]] if limit else []}
 
 
-def current_records(state: dict, limit: int = 12, text_chars: int = 600) -> tuple[list[dict], int]:
+def dispatch_history_compact(state: dict) -> dict:
+    """Compact dispatch projection: counts plus only the recent dispatches that did not complete.
+
+    Completed dispatches are counted; failed, aborted or unknown outcomes stay
+    listed (bounded), because those are the ones a Controller may need to act on.
+    The full view still lists every recent dispatch.
+    """
+    full = dispatch_history(state, limit=0)
+    archives = [item for item in state["records"] if is_adapter_record(item, {DISPATCH_KIND})]
+    summaries = []
+    for item in reversed(archives):
+        archive = parse_json(item["text"])
+        archive = archive if isinstance(archive, dict) else {}
+        result = archive.get("result") if isinstance(archive.get("result"), dict) else {}
+        outcome = result.get("stop_reason", result.get("outcome"))
+        if outcome != "completed":
+            reservation = archive.get("reservation") if isinstance(archive.get("reservation"), dict) else {}
+            summaries.append({"id": item["id"], "operation": archive.get("operation"), "outcome": outcome,
+                              **{key: reservation[key] for key in ("workstream", "role") if key in reservation}})
+        if len(summaries) == COMPACT_NON_COMPLETED_MAX:
+            break
+    return {"record_kind": DISPATCH_KIND, "count": full["count"], "legacy_count": full["legacy_count"], "non_completed": summaries[::-1]}
+
+
+def current_records(state: dict, limit: int = 12, text_chars: int = 600, compact: bool = False) -> tuple[list[dict], int]:
     """The most recent Controller-facing records no later record supersedes (bounded), and their total count.
 
     Adapter history records (dispatch archives, memory receipts, legacy
@@ -430,6 +507,10 @@ def current_records(state: dict, limit: int = 12, text_chars: int = 600) -> tupl
     """
     superseded = {ref for item in state["records"] for ref in item.get("supersedes", [])}
     current = [item for item in state["records"] if item["id"] not in superseded and not is_adapter_record(item)]
+    if compact:
+        # Navigation view: id, kind and a clipped text (a trailing ellipsis marks clipping); status and revision stay in the full view.
+        return [{"id": item["id"], "kind": item["kind"], "text": item["text"][:text_chars] + ("…" if len(item["text"]) > text_chars else "")}
+                for item in current[-limit:]], len(current)
     shown = [{"id": item["id"], "kind": item["kind"], "status": item["status"], "revision": item["revision"],
               "text": item["text"][:text_chars], "truncated": len(item["text"]) > text_chars,
               **({"supersedes": item["supersedes"]} if item.get("supersedes") else {})} for item in current[-limit:]]
@@ -498,9 +579,11 @@ def task_context_update(core, root: Path, store, state: dict, args: dict) -> dic
     result = write(core, root, CONTROLLER_PRODUCER, state, partial)
     store.checkpoint()
     current = core.task_show(root)["state"]
-    records, total = current_records(current)
-    return {**result, "Task Context": {"milestone": current["current_milestone"], "Current Records": records, "Current Record Count": total},
-            "task_context": task_context_text(core, current, root)}
+    records, total = current_records(current, text_chars=0, compact=True)
+    # Ids only: the Controller just wrote the texts; the bounded dynamic context re-supplies them.
+    return {**result, "Task Context": {"milestone": current["current_milestone"], "Current Records": [{"id": item["id"], "kind": item["kind"]} for item in records],
+                                       "Current Record Count": total},
+            "evidence": core.evidence_summary(current), "task_context": task_context_text(core, current, root)}
 
 
 def continuity_append(core, root: Path, store, args: dict, operation: str) -> dict:
@@ -516,20 +599,24 @@ def continuity_append(core, root: Path, store, args: dict, operation: str) -> di
             raise ValueError("INVALID_REGISTER_ARGUMENTS: requirements are {id, workchain_ref}; handoffs are registered by the adapter at dispatch")
         payload, kind = {"requirements": args["requirements"]}, "register"
     else:
-        judgment = args.get("judgment")
-        if set(args) != {"task_id", "base_revision", "judgment"} or not isinstance(judgment, dict) or set(judgment) - JUDGMENT_FIELDS:
+        # One judgment, or an ordered batch committed atomically in one revision (Core: all-or-nothing, 1-64 items).
+        judgment, batch = args.get("judgment"), args.get("judgments")
+        if set(args) not in ({"task_id", "base_revision", "judgment"}, {"task_id", "base_revision", "judgments"}):
+            raise ValueError("INVALID_JUDGE_ARGUMENTS: give exactly one of judgment or judgments; Core assigns task_id and producer")
+        items = [judgment] if "judgment" in args else batch
+        if not isinstance(items, list) and "judgment" not in args:
+            raise ValueError("INVALID_JUDGE_ARGUMENTS: judgments must be a list")
+        if not items or any(not isinstance(item, dict) or set(item) - JUDGMENT_FIELDS for item in items):
             raise ValueError("INVALID_JUDGE_ARGUMENTS: Core assigns task_id and producer")
-        payload, kind = judgment, "judgments"
+        payload, kind = ({"judgments": batch} if "judgments" in args else judgment), "judgments"
     with core._lock(root):
         current = core._load_state(root, active=True)
-        if current["revision"] != args["base_revision"]:
-            raise ValueError("TASK_ID_OR_REVISION_CONFLICT")
-        core._append_continuity_state(current, CONTROLLER_PRODUCER, payload, kind)
+        check_cas(core, current, args)
+        appended = core._append_continuity_state(current, CONTROLLER_PRODUCER, payload, kind)
         core._write_state(root, current)
     store.checkpoint()
-    packet = core.task_status(root)
-    return {"ok": True, "task_id": current["task_id"], "revision": current["revision"], "Evidence Continuity": packet["Evidence Continuity"],
-            "task_context": task_context_text(core, current, root)}
+    # Compact write result: revision, appended ids and the open-evidence summary instead of a status echo.
+    return {**core.task_write_response(current, ["evidence_continuity"], appended=appended), "task_context": task_context_text(core, current, root)}
 
 
 def begin_with_evidence(core, root: Path, args: dict) -> dict:
@@ -547,8 +634,9 @@ def begin_with_evidence(core, root: Path, args: dict) -> dict:
                "producer": "handoff:" + evidence["handoff_id"], "requirement_refs": evidence["requirement_refs"]}
     with core._lock(root):
         current = core._load_state(root, active=True)
-        if current["revision"] != args["base_revision"] or current["active_work"]:
-            raise ValueError("TASK_ID_OR_REVISION_CONFLICT")
+        check_cas(core, current, args)
+        if current["active_work"]:
+            raise ValueError(LEGACY_CONFLICT)
         current["active_work"] = [reservation]
         # Core validates requirement refs against registered requirements.
         core._register_evidence_handoff(current, handoff)
@@ -627,7 +715,7 @@ def main() -> int:
         response = {"protocol": 1, "ok": True, "result": result}
         code = 0
     except (ValueError, OSError, KeyError, TypeError, ImportError) as error:
-        response = {"protocol": 1, "ok": False, "error": str(error)}
+        response = error_response(error)
         code = 1
     print(json.dumps(response, ensure_ascii=True))
     return code

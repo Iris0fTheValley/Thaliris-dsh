@@ -202,9 +202,9 @@ The native root Controller gets these tools; children never see them:
 | `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | Establish selected intent, inspect the explicitly selected task, record mechanical DONE after the Controller's own judgment |
 | `thaliris_workstream` | Dispatch one fresh child with a role, bounded handoff, optional model route and reasoning effort (the Controller picks the cheapest allowed route and lowest effort that fit the working set, after isolation and division of labor), and optional evidence association; the reservation records the route and a digest of the role as bound at dispatch |
 | `thaliris_reconcile` | Check or reconcile a crash reservation from native terminal evidence; UNKNOWN never auto-releases |
-| `thaliris_task_status` | Bounded status with current records, dispatch history (finished dispatches are append-only `dsh-dispatch` Core records, not routing state), authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments) |
+| `thaliris_task_status` | Compact status by default (revision, routing, counts, bounded records, non-completed dispatches, authority digest/mode, open-evidence summary); `view: "full"` returns the complete packet and `since_revision` adds a bounded change hint. Finished dispatches are append-only `dsh-dispatch` Core records, not routing state |
 | `thaliris_task_context` | Record facts, decisions, progress, open items and the milestone; a bounded summary returns as DSH dynamic context after compaction or resume |
-| `thaliris_task_register` / `thaliris_task_judge` | Register opaque requirements; record requirement judgments with exact observation refs |
+| `thaliris_task_register` / `thaliris_task_judge` | Register opaque requirements; record requirement judgments with exact observation refs, singly or as one atomic batch (`judgments`). Results carry the new revision and the open-evidence summary; a revision conflict returns Core's code, recovery and `changes_since` |
 | `thaliris_task_mode` | Switch execution mode on an actual human instruction with revision and authority-digest CAS, after active work is resolved |
 | `thaliris_task_identity` | Read the project identity (`action`: `status`, `get` a version, selected items, one amendment or one challenge, `trace` registered relations); absent identity is normal |
 | `thaliris_task_identity_amend` / `thaliris_task_identity_challenge` / `thaliris_task_identity_relate` | Record an explicit amendment on the human owner's decision, record or dismiss a challenge, register or retract purpose relations (Controller only) |
@@ -232,7 +232,7 @@ Install the main plugin archive through the DSH Plugin Manager. Add both optiona
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
 ~~~
 
 The generated bundle disables runtime/API by default. Before enabling it, configure absolute pythonExecutable, corePath and authorityDirectory values; corePath must point to Core installed in the same Python environment, and authorityDirectory must stay outside the governed Workspace. Then register the canonical Git root as a native DSH Workspace, create or resume its persistent root Session, and bind the exact Workspace ID and root in policy. Do not store credentials in plugin configuration.

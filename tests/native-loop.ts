@@ -404,7 +404,8 @@ async function evidenceContextAndMode() {
     },
     (options: any) => {
       const status = lastTool(options)
-      assert.deepEqual(status['Evidence Continuity'].unincorporated, [{ requirement_ref: 'R1', observation_id: observationId, candidate: 'C1', handoff_id: handoffId }])
+      assert.equal(status.view, 'compact', 'status defaults to the compact view')
+      assert.deepEqual(status.Evidence.unincorporated, [{ requirement_ref: 'R1', observation_id: observationId, candidate: 'C1', handoff_id: handoffId }])
       assert.equal(status.Authority.execution_mode, 'delegated')
       assert.ok(JSON.stringify(options.messages).includes('CONTEXT_DECISION_SENTINEL'), 'root receives its recorded task context as dynamic context')
       digest = status.Authority.sha256
@@ -413,7 +414,8 @@ async function evidenceContextAndMode() {
     },
     (options: any) => {
       const judged = lastTool(options)
-      assert.equal(judged['Evidence Continuity'].unincorporated_total, 0)
+      assert.equal(judged.evidence.unincorporated_total, 0)
+      assert.equal(judged.task_context, undefined, 'the dynamic-context summary is not echoed in the tool result')
       return toolCallResponse('mode', names[9], { task_id: taskId, base_revision: judged.revision, expected_authority_sha256: digest, mode: 'controller-direct', human_instruction: 'stale digest' })
     },
     (options: any) => {

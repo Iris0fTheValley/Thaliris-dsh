@@ -26,6 +26,7 @@ const sourceSchema = object({ id: string, kind: string, locator: string, summary
 const evidenceSchema = object({ candidate: string, requirement_refs: strings })
 const recordSchema = object({ id: string, kind: string, text: string, source_refs: strings, status: string, supersedes: strings }, ['id', 'kind', 'text'])
 const judgmentSchema = object({ id: string, candidate: string, requirement_ref: string, observation_refs: strings, outcome: { type: 'string', enum: ['satisfied', 'unknown', 'repair', 'no-current-impact'] }, reasoning: string, judgment_refs: strings }, ['id', 'candidate', 'requirement_ref', 'observation_refs', 'outcome', 'reasoning'])
+const judgmentsSchema = { type: 'array', items: judgmentSchema, maxItems: 64 }
 const limited = maximum => ({ type: 'array', items: string, maxItems: maximum })
 const identityAmendSchema = object({ ...identitySchema, base_version: { type: 'integer', minimum: 0 }, base_sha256: string, text: string, summary: string, rationale: string,
   decision: object({ decided_by: string, human_instruction: string }), challenge_text: string, why_not_lower: string, evidence_refs: limited(64), resolves: limited(64), affected_refs: limited(64) },
@@ -41,6 +42,16 @@ function validate(parameters, args) {
   if (errors.length) throw new Error(`THALIRIS_INVALID_ARGUMENTS: ${errors.join('; ')}`)
   if (JSON.stringify(args).length > 65536) throw new Error('THALIRIS_ARGUMENT_BOUND_EXCEEDED')
   if (args.base_revision !== undefined && (!Number.isSafeInteger(args.base_revision) || args.base_revision < 1)) throw new Error('THALIRIS_REVISION_REQUIRED')
+  // Exactly one of a single judgment or an atomic ordered batch (one call, one revision).
+  if (('judgment' in args) === ('judgments' in args) && ('judgment' in parameters.properties)) throw new Error('THALIRIS_INVALID_ARGUMENTS: give exactly one of judgment or judgments')
+  if (args.judgments !== undefined && args.judgments.length < 1) throw new Error('THALIRIS_INVALID_ARGUMENTS: judgments must not be empty')
+}
+/** A bridge failure keeps the historical text first; Core's code, recovery hint and bounded details follow and are also exposed as properties. */
+function bridgeError(response) {
+  const message = response.error ?? 'THALIRIS_BRIDGE_FAILED'
+  if (typeof response.code !== 'string') return new Error(message)
+  const { code, recovery, details } = response
+  return Object.assign(new Error(`${message} ${JSON.stringify({ code, recovery, details })}`), { code, recovery, details })
 }
 
 /** Native Settings owns mutable user policy. Core alone owns task intent. */
@@ -182,6 +193,8 @@ export function apply(ctx, config) {
     return pending.then(result => {
       if (result && Object.hasOwn(result, 'task_context') && isNativeRoot(agent)) rememberContext(agent, args.task_id, result.task_context)
       if (operation === 'close' && result?.status === 'DONE') rememberContext(agent, args.task_id, null)
+      // The bounded summary is already re-supplied as dynamic context; the full status view keeps it for explicit reads.
+      if (result && Object.hasOwn(result, 'task_context') && operation !== 'resume' && !(operation === 'status' && args.view === 'full')) { const { task_context, ...visible } = result; return visible }
       return result
     })
   }
@@ -199,7 +212,7 @@ export function apply(ctx, config) {
       const outcome = await command.done, stdout = command.collected.stdout.readFrom(0)
       if (stdout.lossy) throw new Error('THALIRIS_BRIDGE_RESPONSE_TOO_LARGE')
       const response = JSON.parse(stdout.text)
-      if (response.protocol !== 1 || response.ok !== true || outcome.exitCode !== 0) throw new Error(response.error ?? 'THALIRIS_BRIDGE_FAILED')
+      if (response.protocol !== 1 || response.ok !== true || outcome.exitCode !== 0) throw bridgeError(response)
       processSignal.throwIfAborted()
       return response.result
     } finally { clearTimeout(timer); if (command) { command.terminate(); await command.waitForExit() } }
@@ -278,27 +291,26 @@ export function apply(ctx, config) {
       // The dispatch record archives the reservation, which carries route, role digest and evidence handoff.
       const observed = { workstream: selected.workstream, role: selected.role, handoff_sha256: selected.handoff_sha256, correlation: selected.correlation, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
       const beforeFinish = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
-      const ack = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
-      // Still-unresolved evidence returns with the child result, before the next completion decision.
-      const status = await bridge(agent, 'status', { task_id: args.task_id }, signal).catch(() => undefined)
+      // The release returns the compact open-evidence summary (totals plus bounded items) and the new revision with the child result.
+      const { evidence: openEvidence, ...ack } = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
       const value = { ...ack, child_id: run.id, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', route: route ? { ...route } : 'inherit', role_sha256: selected.role_sha256,
         ...(evidence ? { evidence_handoff_id: evidence.handoff_id, candidate: evidence.candidate } : {}),
-        evidence_continuity: status?.['Evidence Continuity'] ?? 'UNKNOWN', output: result.output }
+        evidence_continuity: openEvidence ?? 'UNKNOWN', output: result.output }
       if (result.stopReason !== 'completed') throw new Error('THALIRIS_NATIVE_CHILD_FAILED: ' + JSON.stringify(value))
       return value
     } finally { reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (run) { if (run.localAgent) childGrants.delete(run.localAgent); await run.dispose(); runs.delete(run) } }
   })
   register(TOOL_NAMES[3], 'Controller records the mechanical DONE state after judging product completion from the task contract and available evidence.', object({ ...identitySchema, decision: string }),
     (args, agent, signal) => bridge(agent, 'close', args, signal))
-  register(TOOL_NAMES[5], 'Bounded task status: routing mechanics, current records, authority digest/mode and evidence continuity (unincorporated observations, unresolved judgments); page with evidence_offset.',
-    object({ task_id: string, evidence_offset: { type: 'integer' } }, ['task_id']), (args, agent, signal) => bridge(agent, 'status', args, signal))
+  register(TOOL_NAMES[5], 'Task status. Default compact view: revision, routing mechanics, counts, bounded current records (id, kind, text clipped), non-completed dispatches, authority digest/mode and the open-evidence summary (totals plus bounded items; page with evidence_offset). view "full" returns the complete packet; since_revision adds a bounded Changes Since review hint.',
+    object({ task_id: string, evidence_offset: { type: 'integer', minimum: 0 }, view: { type: 'string', enum: ['compact', 'full'] }, since_revision: { type: 'integer', minimum: 0 } }, ['task_id']), (args, agent, signal) => bridge(agent, 'status', args, signal))
   register(TOOL_NAMES[6], 'Controller records dynamic task context: append facts, decisions, progress and open items as records (supersedes replaces earlier ones), sources, and the milestone. The adapter supplies producer and revision.',
     object({ ...identitySchema, records: { type: 'array', items: recordSchema }, sources: { type: 'array', items: sourceSchema }, milestone: string }, Object.keys(identitySchema)),
     (args, agent, signal) => bridge(agent, 'context', args, signal))
   register(TOOL_NAMES[7], 'Controller registers opaque user requirements ({id, workchain_ref}) for evidence continuity. Handoffs are registered by the adapter at dispatch.',
     object({ ...identitySchema, requirements: { type: 'array', items: object({ id: string, workchain_ref: string }) } }), (args, agent, signal) => bridge(agent, 'register', args, signal))
-  register(TOOL_NAMES[8], 'Controller records one requirement judgment for a candidate with exact observation refs, outcome and reasoning; optional judgment_refs address an earlier repair/unknown basis.',
-    object({ ...identitySchema, judgment: judgmentSchema }), (args, agent, signal) => bridge(agent, 'judge', args, signal))
+  register(TOOL_NAMES[8], 'Controller records requirement judgments for a candidate with exact observation refs, outcome and reasoning; optional judgment_refs address an earlier repair/unknown basis. Give one judgment, or judgments (1-64, ordered, atomic: all commit in one revision or none). The result carries the new revision and the open-evidence summary.',
+    object({ ...identitySchema, judgment: judgmentSchema, judgments: judgmentsSchema }, Object.keys(identitySchema)), (args, agent, signal) => bridge(agent, 'judge', args, signal))
   register(TOOL_NAMES[9], 'Switch execution mode only on an actual human instruction, with the expected authority digest from inspect/status; resolve active work first. Goal, boundary, invariants and acceptance stay frozen; child roles and grants are not widened.',
     object({ ...identitySchema, expected_authority_sha256: string, mode: { type: 'string', enum: ['delegated', 'controller-direct', 'single-agent'] }, human_instruction: string }),
     (args, agent, signal) => bridge(agent, 'mode', args, signal))
@@ -361,8 +373,8 @@ export function apply(ctx, config) {
     } finally { await handle.close() }
   }
   async function reconcile(agent, args, signal) {
-    const inspected = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
-    if (inspected.state.task_id !== args.task_id || inspected.state.revision !== args.base_revision) throw new Error('TASK_ID_OR_REVISION_CONFLICT')
+    // A stale revision is refused by the bridge with the structured conflict (code, recovery, changes_since).
+    const inspected = await bridge(agent, 'inspect', { task_id: args.task_id, base_revision: args.base_revision }, signal)
     if (inspected.state.active_work.length !== 1) throw new Error('THALIRIS_RESERVATION_REQUIRED')
     const reservation = JSON.parse(inspected.state.active_work[0])
     const observation = await nativeObservation(agent, reservation, signal, args.action === 'cancel-reconcile')
