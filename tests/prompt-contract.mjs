@@ -67,7 +67,7 @@ assert.ok(native.includes("EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])"
 assert.ok(native.includes("view: { type: 'string', enum: ['compact', 'full'] }") && native.includes('since_revision'))
 assert.ok(native.includes('judgments: judgmentsSchema') && native.includes('give exactly one of judgment or judgments'))
 assert.ok(native.includes('throw bridgeError(response)') && native.includes('{ code, recovery, details }'))
-const identityTools = ['thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate']
+const identityTools = ['thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate', 'thaliris_task_identity_note', 'thaliris_task_identity_suggest']
 for (const name of ['thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode', ...identityTools]) assert.ok(native.match(/export const TOOL_NAMES = Object\.freeze\(\[([^\]]+)\]/s)[1].includes(`'${name}'`), name)
 // Identity tools are Controller-only: never child-allowed, never role grants, always on the dispatch deny list.
 for (const name of identityTools) {

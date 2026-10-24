@@ -29,7 +29,7 @@ const pluginUrl = new URL('../index.mjs', import.meta.url).href
 const corePath = process.env.THALIRIS_CORE_PATH!
 const names = ['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
   'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
-  'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate']
+  'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate', 'thaliris_task_identity_note', 'thaliris_task_identity_suggest']
 const observeTool = 'thaliris_observe'
 const selectedContract = { human_instruction: 'Implement the selected bounded example. UNSELECTED_AUTHORITY_SENTINEL', boundary: 'Only the selected fixture.', invariants: 'Fresh context, root-only task authority.', acceptance: 'Controller assesses the returned answer.', execution_mode: 'delegated' }
 const handoff = { goal: 'Return the selected answer', scope: 'fixture only', invariants: 'Do not widen authority', acceptance: 'Return answer 42', context: 'SELECTED_CONTEXT_ONLY' }
