@@ -8,7 +8,7 @@ const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = process.env.DSH_SOURCE
 if (!source) throw new Error('Set DSH_SOURCE to the pinned DSH source checkout.')
 const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== 'd743267388641bc76f17c45ce8b4c231aed1d32c') {
+if (revision.status !== 0 || revision.stdout.trim() !== '5badb15009ae1756c3afe0ae0cef1faafc290ccc') {
   throw new Error('DSH source revision differs from the verified client baseline.')
 }
 

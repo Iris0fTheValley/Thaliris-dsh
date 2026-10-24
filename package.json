@@ -60,18 +60,18 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5-alpha.1",
-    "@deepseek-ai/dsh-agent": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-tools": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-subagent": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-agent": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-tools": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-subagent": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.1",
     "@deepseek-ai/schemastery": "3.18.5-alpha.1",
-    "@deepseek-ai/dsh-workspace": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-session-persistence": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.2",
-    "@deepseek-ai/dsh-util-values": "0.2.1-alpha.2"
+    "@deepseek-ai/dsh-workspace": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session-persistence": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-util-values": "0.2.1-alpha.1"
   },
-  "dshSourceRevision": "d743267388641bc76f17c45ce8b4c231aed1d32c",
+  "dshSourceRevision": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
