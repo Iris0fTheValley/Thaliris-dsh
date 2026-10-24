@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { boot, createRuntimeResolution, initProfile, PluginPackages, readProfilePatches, readProfileManifest, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
@@ -103,7 +103,7 @@ const manager = async () => {
   // Diagnose an absent native Plugin Manager instead of failing on undefined.
   await (owner as any).loader.await?.()
   const entries = [...(owner as any).loader.entries()].map((entry: any) => ({ id: entry.id, name: entry.options?.name, disabled: entry.disabled, state: entry.fiber?.state, error: entry.fiber?.error ? String(entry.fiber.error?.stack ?? entry.fiber.error).slice(0, 600) : undefined }))
-  assert.ok(owner!.get('pluginManager'), `native Plugin Manager unavailable: ${JSON.stringify({ startedBundles: profile.startedBundles, patches: readProfilePatches('product', profile as never), entries })}`)
+  assert.ok(owner!.get('pluginManager'), `native Plugin Manager unavailable: ${JSON.stringify({ startedBundles: profile.startedBundles, patches: readProfilePatches('product', profile as never), now: loadProfileDirectory('dsh', profileDirectory, anchor), coreManifest: existsSync(join(core, 'package.json')), coreDir: existsSync(core), modules: existsSync(join(profileDirectory, 'node_modules')) ? readdirSync(join(profileDirectory, 'node_modules')) : null, entries })}`)
   return owner!.get('pluginManager')!
 }
 const bundle = async (name: string) => (await (await manager()).listBundles()).find(row => row.name === name)
