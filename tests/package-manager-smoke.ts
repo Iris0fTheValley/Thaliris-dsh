@@ -12,6 +12,8 @@ import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import Registry from '@deepseek-ai/dsh-typert-registry'
 import Gateway from '@deepseek-ai/dsh-api-gateway'
+import RemoteAccess from '@deepseek-ai/dsh-api-remote-access'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
 
 const packDirectory = process.env.THALIRIS_PACK_DIR!
 const temporaryRoot = process.env.THALIRIS_TEST_TMP_ROOT!
@@ -141,7 +143,10 @@ try {
   await owner.plugin(StorageJson, { root: join(home, 'storage') })
   await owner.plugin(StorageDomain, { backend: 'json' })
   await owner.plugin(Registry)
+  await owner.plugin(RemoteAccess)
   await owner.plugin(Gateway)
+  // Every in-process Gateway call names its Peer; the smoke acts as the local owner.
+  const ownerPeer = new Peer(owner.root, { principal: { kind: 'owner' } })
   stage = 'install packages'
 
   rootAgent = {
@@ -216,11 +221,11 @@ try {
   await setPluginEnabled('@thaliris/dsh-memory', true)
   await setPluginEnabled('@thaliris/dsh-memory-local', true)
   const api = owner as any
-  const apiTemplates = await api.typertGateway.invoke({ namespace: 'thaliris', method: 'templates', args: {} })
+  const apiTemplates = await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'templates', args: {} })
   assert.ok(apiTemplates.some((value: any) => value.id === 'curator'), 'the packed API bundle must register its native Gateway service')
-  const apiTools = await api.typertGateway.invoke({ namespace: 'thaliris', method: 'toolCatalog', args: {} })
+  const apiTools = await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'toolCatalog', args: {} })
   assert.ok(apiTools.some((value: any) => value.name === 'thaliris_task_start'))
-  assert.deepEqual(await api.typertGateway.invoke({ namespace: 'thaliris', method: 'providers', args: {} }), [
+  assert.deepEqual(await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'providers', args: {} }), [
     { id: 'thaliris-local', name: 'Local Thaliris memory' },
   ])
 

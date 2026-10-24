@@ -77,6 +77,25 @@ export function apply(ctx, config) {
   }
   let disposed = false, tail = Promise.resolve(), bridgeTail = Promise.resolve()
   const cancellations = new Set(), operations = new Set(), runs = new Set(), childGrants = new WeakMap()
+  // Dispatch-time child composition keyed by the reserved native child id: the role
+  // persona and the exact tool grant, installed on the child's own scope exactly as
+  // DSH formerly applied a per-request persona and toolFilter.
+  const compositions = new Map()
+  ctx.on('agent/created', ({ agent: created, source }) => {
+    const composition = compositions.get(created.id)
+    if (composition) {
+      if (created.session.header.parentSession !== composition.parent.id) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      created.ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: created.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'), text: composition.persona })
+      created.ctx.tools.restrict(composition.toolFilter)
+      composition.applied++
+      return
+    }
+    // A dispatched child is one-shot: its grants exist only for its dispatch, so it is
+    // never re-created (resumed or continued) without them.
+    if (source !== 'startup' && created.session.header.origin === 'subagent' && created.session.snapshotEvents().some(event => event.type === 'subagent/descriptor' && String(event.data?.label).startsWith('thaliris:'))) {
+      throw new Error('THALIRIS_CHILD_RESUME_DENIED')
+    }
+  })
   // Bounded Controller task context per native root, re-supplied as DSH dynamic
   // context; it is recorded history, never acceptance.
   const taskContexts = new Map(), restorations = new Map()
@@ -276,33 +295,41 @@ export function apply(ctx, config) {
       role_sha256: roleDigest(role), route: route ? `${route.provider}/${route.model}${route.reasoningEffort !== undefined ? '@' + route.reasoningEffort : ''}` : 'inherit',
       ...(evidence ? { evidence_handoff_id: evidence.handoff_id } : {}) }
     let begun = await bridge(agent, 'begin', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify(selected), ...(evidence ? { evidence } : {}) }, signal)
-    let run
+    let run, child
     const reservationBound = Promise.withResolvers()
     reservationBound.promise.catch(() => {})
+    // DSH composes new children through Agent Presets and no longer accepts a
+    // per-request persona or tool filter. The child identity is reserved here and
+    // its exact dispatch-time composition is installed on the child's own scope by
+    // the `agent/created` listener, before the child's first prompt assembly.
+    const childId = randomUUID()
+    const composition = { parent: agent, persona: role.prompt, toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }, applied: 0 }
+    compositions.set(childId, composition)
     try {
-      run = await ctx.subagents.start(config.subagentProvider, { parent: agent, signal, label: selected.correlation, prompt: [{ type: 'text', text: prompt }], maxDepth: 1,
-        toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }, ...(route ? { agentOptions: route } : {}), persona: role.prompt })
+      run = await ctx.subagents.startActivation({ provider: config.subagentProvider, label: selected.correlation, childId, signal, delivery: 'caller',
+        request: { parent: agent, prompt: [{ type: 'text', text: prompt }], maxDepth: 1, ...(route ? { agentOptions: route } : {}) } })
       runs.add(run)
-      if (!run.localAgent || run.localAgent.id !== run.id || run.localAgent.session.header.parentSession !== agent.id || run.localAgent.session.header.isSeeded !== false) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
-      childGrants.set(run.localAgent, { role, roleId: role.id, parent: agent, bound, taskId: args.task_id, evidence, reservationBound: reservationBound.promise })
+      child = ctx.agents.get(run.childId)
+      if (run.childId !== childId || composition.applied !== 1 || !child || child.session.header.parentSession !== agent.id || child.session.header.isSeeded !== false) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      childGrants.set(child, { role, roleId: role.id, parent: agent, bound, taskId: args.task_id, evidence, reservationBound: reservationBound.promise })
       // Commit observed ID immediately, before awaiting the result. Catalog label covers the preceding crash window.
       await ctx.sessionPersistence.flush()
       const beforeBind = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
-      begun = await bridge(agent, 'bind', { task_id: args.task_id, base_revision: beforeBind.state.revision, observation: JSON.stringify({ ...selected, child_id: run.id }) }, signal)
+      begun = await bridge(agent, 'bind', { task_id: args.task_id, base_revision: beforeBind.state.revision, observation: JSON.stringify({ ...selected, child_id: run.childId }) }, signal)
       reservationBound.resolve()
       const result = await run.result
       await ctx.sessionPersistence.flush()
       // The dispatch record archives the reservation, which carries route, role digest and evidence handoff.
-      const observed = { workstream: selected.workstream, role: selected.role, handoff_sha256: selected.handoff_sha256, correlation: selected.correlation, child_id: run.id, stop_reason: result.stopReason, provenance: 'native-run-result' }
+      const observed = { workstream: selected.workstream, role: selected.role, handoff_sha256: selected.handoff_sha256, correlation: selected.correlation, child_id: run.childId, stop_reason: result.stopReason, provenance: 'native-run-result' }
       const beforeFinish = await bridge(agent, 'inspect', { task_id: args.task_id }, signal)
       // The release returns the compact open-evidence summary (totals plus bounded items) and the new revision with the child result.
       const { evidence: openEvidence, ...ack } = await bridge(agent, 'finish', { task_id: args.task_id, base_revision: beforeFinish.state.revision, observation: JSON.stringify(observed) }, signal)
-      const value = { ...ack, child_id: run.id, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', route: route ? { ...route } : 'inherit', role_sha256: selected.role_sha256,
+      const value = { ...ack, child_id: run.childId, stop_reason: result.stopReason, native_completed: result.stopReason === 'completed', route: route ? { ...route } : 'inherit', role_sha256: selected.role_sha256,
         ...(evidence ? { evidence_handoff_id: evidence.handoff_id, candidate: evidence.candidate } : {}),
         evidence_continuity: openEvidence ?? 'UNKNOWN', output: result.output }
       if (result.stopReason !== 'completed') throw new Error('THALIRIS_NATIVE_CHILD_FAILED: ' + JSON.stringify(value))
       return value
-    } finally { reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (run) { if (run.localAgent) childGrants.delete(run.localAgent); await run.dispose(); runs.delete(run) } }
+    } finally { reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (child) childGrants.delete(child); try { if (run) { await run.dispose(); runs.delete(run) } } finally { compositions.delete(childId) } }
   })
   register(TOOL_NAMES[3], 'Controller records the mechanical DONE state after judging product completion from the task contract and available evidence.', object({ ...identitySchema, decision: string }),
     (args, agent, signal) => bridge(agent, 'close', args, signal))
@@ -458,6 +485,6 @@ export function apply(ctx, config) {
     for (const cancellation of cancellations) cancellation.abort('Thaliris plugin unloaded')
     await Promise.allSettled([...runs].map(run => run.dispose()))
     await Promise.allSettled([...operations])
-    runs.clear(); cancellations.clear(); taskContexts.clear(); restorations.clear()
+    runs.clear(); cancellations.clear(); taskContexts.clear(); restorations.clear(); compositions.clear()
   })
 }

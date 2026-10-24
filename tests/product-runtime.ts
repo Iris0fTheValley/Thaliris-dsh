@@ -17,7 +17,7 @@ import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
@@ -28,6 +28,8 @@ import { remoteContribution } from '../remote.mjs'
 import * as ClientGateway from '@deepseek-ai/dsh-api-gateway/client'
 import Registry from '@deepseek-ai/dsh-typert-registry'
 import Gateway from '@deepseek-ai/dsh-api-gateway'
+import RemoteAccess from '@deepseek-ai/dsh-api-remote-access'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
 import Memory from '../components/memory/index.mjs'
 import * as LocalMemory from '../components/memory-local/index.mjs'
 const upstream = process.env.DSH_SOURCE!
@@ -60,7 +62,7 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
   const patches = initialize ? [] : readProfilePatches('product', profile as any)
   const ctx = await boot('product', join(dir, 'cordis.yml'), patches, async ctx => {
     ctx.provide('profileContext', profile as any)
-    await mountAgentLoopTestDependencies(ctx)
+    await mountAgentLoopTestDependencies(ctx, { workingDirectory: true })
     await ctx.plugin(Persistence, { root: join(home, 'sessions'), compression: 'none' })
     await ctx.plugin(Storage); await ctx.plugin(StorageJson, { root: join(home, 'storage') }); await ctx.plugin(StorageDomain, { backend: 'json' })
     await ctx.plugin(WorkspaceRegistry)
@@ -78,16 +80,20 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
       patches.push(...readProfilePatches('product', profile as any))
     }
   })
-  await ctx.plugin(Registry); await ctx.plugin(Gateway); await ctx.plugin(Api)
+  await ctx.plugin(Registry); await ctx.plugin(RemoteAccess); await ctx.plugin(Gateway); await ctx.plugin(Api)
+  // Every in-process Gateway call names its Peer; this fixture acts as the local owner.
+  const owner = new Peer(ctx.root, { principal: { kind: 'owner' } })
+  const invoke = (request: { namespace: string, method: string, args: Record<string, unknown> }) => ctx.typertGateway.invoke({ peer: owner, ...request })
   const parent = initialize ? await ctx.agentLoop.create(SessionId('persistent-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
     : resumeRoot ? (await ctx.agents.resume({ resumeSessionId: SessionId('persistent-controller'), agentOptions: { provider: 'mock', model: 'parent' } })).agent : undefined
   await ctx.sessionPersistence.flush()
   let call = 0
-  const execute = (name: string, args: any, agent = parent) => ctx.tools.execute({ callId: ToolCallId(`product-${++call}`), name, arguments: args, agent, signal: signal() })
+  // One standalone call through the native batch executor; the single settled result is returned.
+  const execute = async (name: string, args: any, agent = parent) => (await ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId(`product-${++call}`), name, arguments: JSON.stringify(args) }], agent, signal: signal() })).results[0]!.result as any
   const view = () => ctx.settings.describe().find(row => row.ns === 'thaliris')!
   const edit = async (ops: any[], expected = view().revision) => ctx.settings.mutate('thaliris', ops, expected)
   const inspect = async (taskId: string) => { const value: any = await execute('thaliris_task_inspect', { task_id: taskId }); assert.equal(value.isError, false); return value.value }
-  return { ctx, parent, execute, edit, view, inspect, mock, workspace, secondRoot }
+  return { ctx, parent, execute, invoke, edit, view, inspect, mock, workspace, secondRoot }
 }
 function bridge(home: string, operation: string, arguments_: any) {
   return JSON.parse(execFileSync(process.env.THALIRIS_TEST_PYTHON!, ['-I', bridgePath], { input: JSON.stringify({ protocol: 1, core_path: corePath, root: join(home, 'repo'), authority_directory: join(home, 'authority'), native_controller_id: 'persistent-controller', native_workspace_id: arguments_.workspaceId, operation, arguments: arguments_.args }), encoding: 'utf8' }))
@@ -131,20 +137,20 @@ async function initialize(home: string) {
       open: () => (async function* () {})(),
       call: async (_channel: string, endpoint: string, payload: any) => {
         const [namespace, method] = endpoint.split('/')
-        try { return { ok: true, value: await h.ctx.typertGateway.invoke({ namespace: namespace!, method: method!, args: payload.args }) } }
+        try { return { ok: true, value: await h.invoke({ namespace: namespace!, method: method!, args: payload.args }) } }
         catch (error: any) { return { ok: false, error: { code: 'gateway/internal', message: error.message, details: {} } } }
       },
     } } as any)
     await client.plugin(ClientGateway)
     const unmount = await client.remote.$mount(remoteContribution)
-    const clientTemplates: any = await (client.remote as any).thaliris.templates(); assert.equal(clientTemplates.ok, true); assert.ok(clientTemplates.value.length)
+    const clientTemplates: any = await (client.remote as any).thaliris.templates(); assert.equal(clientTemplates.ok, true, JSON.stringify(clientTemplates)); assert.ok(clientTemplates.value.length)
     const clientTools: any = await (client.remote as any).thaliris.toolCatalog(); assert.equal(clientTools.ok, true)
     assert.ok(clientTools.value.some((tool: any) => tool.name === 'thaliris_task_start'))
     assert.deepEqual(Object.keys(clientTools.value[0] ?? {}).sort(), ['description', 'name'])
     const clientDiagnostics: any = await (client.remote as any).thaliris.diagnostics(h.parent.id, taskId); assert.equal(clientDiagnostics.ok, true); assert.equal(clientDiagnostics.value.task.state.status, 'ACTIVE')
     await unmount(); await client.fiber.dispose()
-    const templates: any = await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'templates', args: {} }); assert.ok(templates.some((value: any) => value.id === 'curator'))
-    const diagnostics: any = await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: h.parent.id, taskId } }); assert.equal(diagnostics.task.state.status, 'ACTIVE'); assert.equal(typeof diagnostics.configurationRevision, 'number')
+    const templates: any = await h.invoke({ namespace: 'thaliris', method: 'templates', args: {} }); assert.ok(templates.some((value: any) => value.id === 'curator'))
+    const diagnostics: any = await h.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: h.parent.id, taskId } }); assert.equal(diagnostics.task.state.status, 'ACTIVE'); assert.equal(typeof diagnostics.configurationRevision, 'number')
     const taskPath = await taskStatePath(h.workspace, taskId)
     const bytes = await readFile(taskPath)
     const rev = h.view().revision
@@ -191,13 +197,13 @@ async function initialize(home: string) {
     assert.equal((await h.execute('thaliris_memory_read', { provider: 'forbidden', key: 'x', maxBytes: 64 })).isError, true)
     assert.equal((await h.execute('thaliris_memory_search', { provider: 'external', query: 'x', limit: 1, maxBytes: 1 })).isError, true)
     const proposed: any = await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'external', key: 'x', text: 'selected', provenance: 'user-selected fixture' }); assert.equal(proposed.isError, false); assert.equal(writes, 0)
-    await assert.rejects(h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId: orphanTaskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
+    await assert.rejects(h.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId: orphanTaskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
     assert.equal(writes, 0, 'a proposal from one task cannot be approved through another task ID')
-    await h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }); assert.equal(writes, 1)
+    await h.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }); assert.equal(writes, 1)
     const approvedState = (await h.inspect(taskId)).state
     assert.ok(!approvedState.pending_results.some((value: string) => value.includes(proposed.value.proposal_id)), 'approval consumes the pending proposal')
     assert.ok(approvedState.records.some((item: any) => item.kind === 'dsh-memory-approval' && item.producer === 'dsh:adapter' && JSON.parse(item.text).receipt.proposal_id === proposed.value.proposal_id), 'approval receipt is an adapter record')
-    await assert.rejects(h.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
+    await assert.rejects(h.invoke({ namespace: 'thaliris', method: 'approveMemory', args: { sessionId: h.parent.id, taskId, proposalId: proposed.value.proposal_id } }), /MEMORY_PERMISSION_DENIED/)
     assert.equal(writes, 1, 'a consumed proposal cannot be approved twice')
     await h.edit([{ op: 'set', path: ['policy', 'memory', 'mode'], value: 'suggest-review' }])
     const suggestion: any = await h.execute('thaliris_memory_propose', { task_id: taskId, provider: 'thaliris-local', key: 'local', text: 'stored after review', provenance: 'fixture' }); assert.equal(suggestion.isError, false)
@@ -256,7 +262,7 @@ async function initialize(home: string) {
     const workspaceId = (await h.ctx.workspaceRegistry.resolveByPath(h.workspace))!.id
     const begun = bridge(home, 'begin', { workspaceId, args: { task_id: task.state.task_id, base_revision: task.state.revision, observation: JSON.stringify(reservation) } }); assert.equal(begun.ok, true)
     script.push(textResponse('native completed before bridge acknowledgement'))
-    const run = await h.ctx.subagents.start('spawn', { parent: h.parent, signal: signal(), label: reservation.correlation, prompt: [{ type: 'text', text: 'Selected crash fixture' }], maxDepth: 1, toolFilter: { allow: [], deny: Plugin.TOOL_NAMES }, persona: 'Fixture' })
+    const run = await h.ctx.subagents.startActivation({ provider: 'spawn', label: reservation.correlation, signal: signal(), delivery: 'caller', request: { parent: h.parent, prompt: [{ type: 'text', text: 'Selected crash fixture' }], maxDepth: 1 } })
     assert.equal((await run.result).stopReason, 'completed')
     await h.ctx.sessionPersistence.flush(); await run.dispose()
     const check: any = await h.execute('thaliris_reconcile', { task_id: task.state.task_id, base_revision: begun.result.revision, action: 'check' }); assert.equal(check.value.outcome, 'completed'); assert.equal(check.value.released, false)
@@ -268,7 +274,7 @@ async function restart(home: string) {
   const unloaded = await harness(home, false, false)
   try {
     assert.equal(unloaded.ctx.agents.get(SessionId('persistent-controller')), undefined, 'fixture begins with no live Agent for the persisted root Session')
-    const diagnostics: any = await unloaded.ctx.typertGateway.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: 'persistent-controller', taskId } })
+    const diagnostics: any = await unloaded.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: 'persistent-controller', taskId } })
     assert.equal(diagnostics.task.state.status, 'ACTIVE', 'native diagnostics resumes the exact persisted root Agent and reads the explicitly selected Core task')
     assert.equal(diagnostics.workspace.workspaceId, (await unloaded.ctx.workspaceRegistry.resolveByPath(unloaded.workspace))!.id)
     assert.equal(unloaded.ctx.agents.get(SessionId('persistent-controller')), undefined, 'one-shot diagnostics disposes only the Agent handle it resumed')

@@ -27,6 +27,13 @@ assert.ok(native.includes('persona: role.prompt'))
 assert.ok(native.includes('...args.handoff'))
 assert.ok(native.includes('toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }'))
 assert.ok(native.includes("EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])"))
+// DSH no longer accepts a per-request persona/toolFilter: the dispatch-time composition is
+// installed on the reserved child's own scope before its first prompt assembly, and a
+// Thaliris child is never re-created (resumed) without it.
+assert.ok(native.includes("created.ctx.systemPrompt.section({ name: 'deployment:persona-prefix'"))
+assert.ok(native.includes('created.ctx.tools.restrict(composition.toolFilter)'))
+assert.ok(native.includes("childId, signal, delivery: 'caller'"))
+assert.ok(native.includes("throw new Error('THALIRIS_CHILD_RESUME_DENIED')"))
 const identityTools = ['thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate', 'thaliris_task_identity_note', 'thaliris_task_identity_suggest']
 for (const name of ['thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode', ...identityTools]) assert.ok(native.match(/export const TOOL_NAMES = Object\.freeze\(\[([^\]]+)\]/s)[1].includes(`'${name}'`), name)
 // Identity tools are Controller-only: never child-allowed, never role grants, always on the dispatch deny list.

@@ -1,6 +1,6 @@
 {
   "name": "@thaliris/dsh-memory-local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,10 +17,10 @@
   ],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.5-alpha.1",
-    "@deepseek-ai/schemastery": "3.18.5-alpha.1",
-    "@deepseek-ai/dsh-storage-domain": "0.2.1-alpha.1",
-    "@thaliris/dsh-memory": "0.1.0"
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@deepseek-ai/dsh-storage-domain": "0.2.1-rc.3",
+    "@thaliris/dsh-memory": "0.2.0"
   },
   "dependencies": {
     "zod": "^4.4.3"

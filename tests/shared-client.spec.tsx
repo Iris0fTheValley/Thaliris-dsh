@@ -401,7 +401,20 @@ describe('shared client lifecycle', () => {
       if (!(endpoint in values)) throw new Error(`Unexpected endpoint: ${endpoint}`)
       return { ok: true, value: values[endpoint] }
     })
+    // A UI client answers forwarded interactions, which is what enables remote events
+    // ($on). The fixture socket never opens (RPC calls go through `call`) and reports
+    // its close so Gateway teardown settles.
+    const idleSocket = () => {
+      const closers = new Set<(event: object) => void>()
+      const socket = { readyState: 0, send: () => {},
+        close: () => { if (socket.readyState === 3) return; socket.readyState = 3; for (const listener of [...closers]) listener({}) },
+        addEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.add(listener) },
+        removeEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.delete(listener) } }
+      return socket
+    }
+    const idleStore = { getSnapshot: () => undefined, subscribe: () => () => {} }
     ctx.provide('connection', {
+      interactions: 'answer', openWebSocket: idleSocket, isLoopback: true, generation: idleStore, state: idleStore, reconnect: () => {},
       rpc: { call }, registerGenerationSource: () => () => {}, start: () => ({ stop: () => {} }),
     })
     await ctx.plugin(TypertRegistry)

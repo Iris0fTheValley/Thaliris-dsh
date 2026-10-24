@@ -6,8 +6,8 @@ on:
 permissions:
   contents: read
 env:
-  # The verified DSH native API baseline (tag dsh-v0.2.1-alpha.1); see CORE-BASELINE.md.
-  DSH_REVISION: 5badb15009ae1756c3afe0ae0cef1faafc290ccc
+  # The verified DSH native API baseline (upstream master, packages 0.2.1-rc.3); see CORE-BASELINE.md.
+  DSH_REVISION: 22ddee3792402c3e70ec5f86a63c3e3e895a2f60
   DSH_TELEMETRY_DISABLED: '1'
 jobs:
   pairing:

@@ -11,7 +11,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import Subagents from '@deepseek-ai/dsh-subagent'
 import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
@@ -47,7 +47,7 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
   await mkdir(workspace)
   execFileSync('git', ['init', '-q', workspace])
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx)
+  await mountAgentLoopTestDependencies(ctx, { workingDirectory: true })
   await ctx.plugin(Persistence, { root: join(directory, 'sessions'), compression: 'none' })
   await ctx.plugin(Storage)
   await ctx.plugin(StorageJson, { root: join(directory, 'storage') })
@@ -96,7 +96,8 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
     ledger: await readFile(await taskStatePath(workspace, taskId)),
     authority: await readFile(await authorityPath(taskId)),
   })
-  const execute = (name: string, args: any, agent: Agent | undefined = parent) => ctx.tools.execute({ callId: ToolCallId(`call-${++call}`), name, arguments: args, agent, signal: signal() })
+  // One standalone call through the native batch executor; the single settled result is returned.
+  const execute = async (name: string, args: any, agent: Agent | undefined = parent) => (await ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId(`call-${++call}`), name, arguments: JSON.stringify(args) }], ...(agent ? { agent } : {}), signal: signal() })).results[0]!.result as any
   const clean = async () => {
     await ctx.fiber.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -171,6 +172,7 @@ async function closedLoop() {
     assert.equal(child!.session.header.parentSession, parent.id)
     assert.equal(child!.session.header.isSeeded, false)
     assert.equal(child!.session.inheritedEventCount, 0)
+    assert.equal(child!.session.header.delegationDepth, 1, 'the dispatched child runs at the maxDepth: 1 delegation cap')
     for (const name of names) {
       const definition = ctx.tools.get(name)!
       bodyDenials.push(assert.rejects(definition.execute({}, { agent: child, signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/).then(() => deniedInBody++))
@@ -187,6 +189,9 @@ async function closedLoop() {
     assert.equal((await fixture.authority(selectedTaskId)).status, 'DONE')
     assert.equal((await fixture.authority(selectedTaskId)).dsh_controller_id, parent.id)
     assert.equal(ctx.agents.get(observed.child_id), undefined, 'native run dispose removes child')
+    // Dispatch grants exist only for the dispatch: the one-shot child is never re-created without them.
+    await assert.rejects(ctx.agents.resume({ resumeSessionId: observed.child_id, parentAgent: parent, signal: signal() }), /THALIRIS_CHILD_RESUME_DENIED/)
+    assert.equal(ctx.agents.get(observed.child_id), undefined, 'a refused resume leaves no live child')
     assert.equal(fixture.mock.requests.length, 7)
     assert.equal(fixture.mock.requests[0].model, 'parent')
     assert.equal(occurrences(systemText(fixture.mock.requests[0]), 'Thaliris Controller contract:'), 1, 'root guidance is present before its first tool call')
@@ -308,8 +313,14 @@ async function unloadActiveChild() {
     let childStarts = 0
     const published = Promise.withResolvers<void>()
     fixture.ctx.on('subagent/start', (info: SubagentRunInfo) => { childId = info.id; childStarts++; published.resolve() })
+    // DSH publishes subagent/start before the parent catalog entry; the child is
+    // established and cataloged once its first model request is in flight.
+    const requested = Promise.withResolvers<void>()
+    const requests = fixture.mock.requests
+    requests.push = (...items: any[]) => { const length = Array.prototype.push.apply(requests, items); requested.resolve(); return length }
     const operation = fixture.execute(names[2]!, { task_id: started.value.task_id, base_revision: 1, workstream: 'hanging', role: 'Implementer', handoff })
     await published.promise
+    await requested.promise
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: true })
     await fixture.ctx.loader.await()
     assert.equal((await operation).isError, true)
@@ -346,7 +357,7 @@ async function unloadActiveChild() {
     assert.equal((await fixture.authority(taskId)).status, 'ACTIVE')
     const check: any = await fixture.execute(names[4]!, { task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision, action: 'check' })
     assert.equal(check.isError, false, JSON.stringify(check))
-    assert.equal(check.value.outcome, 'aborted')
+    assert.equal(check.value.outcome, 'aborted', JSON.stringify(check.value))
     assert.equal(check.value.released, false)
     assert.deepEqual(await fixture.durableBytes(taskId), preserved)
     const reconciled: any = await fixture.execute(names[4]!, { task_id: inspected.value.state.task_id, base_revision: inspected.value.state.revision, action: 'reconcile' })

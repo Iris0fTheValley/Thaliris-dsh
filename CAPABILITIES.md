@@ -1,6 +1,6 @@
 # Runtime capability observations
 
-Baseline: upstream DSH `5badb15009ae1756c3afe0ae0cef1faafc290ccc`.
+Baseline: upstream DSH `22ddee3792402c3e70ec5f86a63c3e3e895a2f60`.
 
 | Surface | Verified behavior | Limit |
 |---|---|---|
@@ -8,7 +8,7 @@ Baseline: upstream DSH `5badb15009ae1756c3afe0ae0cef1faafc290ccc`.
 | Root continuation | Native Workspace + persisted root Session/new Agent resumes exact anchor | Missing/changed native workspace anchor fails closed |
 | Policy | Native Settings live forms, stored edits, revision conflicts; editable prompt and legal empty role list | Deployment paths use native ordinary plugin configuration |
 | Models | Native exact route metadata and configured allowed-set membership | No route ranking or online catalog smoke |
-| Children | Fresh native spawn, bounded handoff, allowlist plus body checks, immediate ID/correlation recording | Current supported provider is local in-process spawn |
+| Children | Fresh native spawn through `subagents.startActivation` with a reserved child id (caller delivery, `maxDepth: 1`), bounded handoff, role persona and exact tool allowlist/deny list installed on the child scope at `agent/created` before its first prompt, plus body checks, immediate ID/correlation recording; re-creating (resuming) a Thaliris child outside its dispatch is refused | Current supported provider is local in-process spawn. DSH now records local children as continuable; the refusal holds only while the adapter is loaded, so with the adapter unloaded a resumed child would run with the parent composition |
 | Roles | Six editable seeds (Investigator, Implementer, Focused Implementer, Reviewer, Curator, Reasoning Specialist); dispatch snapshots the selected role, recorded as `role_sha256` | Roles are adjusted by user Settings edits; no Controller role registration. Non-writing roles rely on tool grants, not a native readonly classification |
 | Model per dispatch | Controller-chosen route and reasoning effort within the role's allowed routes (isolation and division of labor first, then the cheapest allowed route and lowest effort that fit the working set; no cheap route in policy is respected), checked against native model reasoning efforts and recorded with the reservation | Actual model execution is what DSH ran; not separately observed by the adapter |
 | Evidence continuity | Controller register/judge/status; dispatch-registered handoff; child `thaliris_observe` bound to the exact bound child and handoff; the compact open-evidence summary (totals plus bounded items, paged) returned with the child result and with register/judge/context results | No automatic relevance or acceptance; observation without an association is returned in FINAL |

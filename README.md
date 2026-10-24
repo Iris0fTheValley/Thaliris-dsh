@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.2。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.4.0。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -238,7 +238,7 @@ Memory 是独立可选能力，默认关闭。可单独安装 memory capability 
 
 ## 安装与配置
 
-构建需要 Node.js 22.19+ 或 24+，运行 Core 需要 Python 3.11+。从兼容的 DSH/Core 配对构建本地 archive；当前配对和版本来源见[Core baseline](CORE-BASELINE.md)。构建 bundle patch 和共享 Web/Desktop client，然后在仓库根目录及两个可选 Memory 组件目录分别打包：
+构建需要 Node.js 24.9+（与上游 DSH `master` 的 `engines` 一致），运行 Core 需要 Python 3.11+。DSH plugin 0.4.0 只支持上游 DSH `master`（`22ddee3`，包版本 `0.2.1-rc.3`）；更早的 DSH（如 `dsh-v0.2.1-alpha.1`）请使用 DSH plugin 0.3.2。从兼容的 DSH/Core 配对构建本地 archive；当前配对和版本来源见[Core baseline](CORE-BASELINE.md)。构建 bundle patch 和共享 Web/Desktop client，然后在仓库根目录及两个可选 Memory 组件目录分别打包：
 
 ~~~sh
 npm run build:bundle
@@ -251,7 +251,7 @@ npm pack
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.2.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.4.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.2.0.tgz"
 ~~~
 
 生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。
