@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { readPolicy, selectedRole } from './policy.mjs'
+import { validDisposeReason } from './dispose-reason.mjs'
 export { Config } from './policy.mjs'
 export const name = 'thaliris-dsh'
 export const inject = ['agents', 'systemPrompt', 'tools', 'subagents', 'subprocess', 'workspaceRegistry', 'sessionPersistence', 'llm']
@@ -469,6 +470,7 @@ export function apply(ctx, config) {
   register(TOOL_NAMES[4], 'Check/reconcile a crash reservation using native catalog and durable terminal Session evidence. UNKNOWN never auto releases. action dispose (with a reason) is the Controller\'s explicit release of a reservation native evidence cannot resolve: a resident child of this session is cancelled first, and the dispatch is recorded as disposed with native outcome UNKNOWN, never completed.',
     object({ ...identitySchema, action: { type: 'string', enum: ['check', 'reconcile', 'cancel-reconcile', 'dispose'] }, reason: string }, [...Object.keys(identitySchema), 'action']), async (args, agent, signal) => {
       if ((args.action === 'dispose') !== (typeof args.reason === 'string')) throw new Error('THALIRIS_INVALID_ARGUMENTS: reason is required for dispose and accepted only there')
+      if (args.action === 'dispose' && !validDisposeReason(args.reason)) throw new Error('THALIRIS_INVALID_ARGUMENTS: dispose reason must be non-blank and at most 3500 characters; nothing was cancelled')
       const result = await reconcile(agent, args, signal)
       if (result.released) await bridge(agent, 'inspect', { task_id: args.task_id }, signal).catch(() => {})
       return result

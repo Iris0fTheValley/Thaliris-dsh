@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { roleTemplates } from '../role-templates.mjs'
+import { validDisposeReason } from '../dispose-reason.mjs'
 
 const read = name => readFileSync(new URL(name, import.meta.url), 'utf8')
 const role = id => roleTemplates.find(value => value.id === id)
@@ -43,4 +44,8 @@ assert.ok(native.includes('const role = grant?.role'), 'children keep the dispat
 assert.ok(policy.includes("tool === 'thaliris_observe'"), 'observation grants are per dispatch, never role policy')
 assert.ok(native.includes('maxDepth: 1'))
 assert.ok(policy.includes("roles: z.array(roleSchema).default([])"))
+for (const bad of [undefined, null, 1, '', ' \n\t', 'x'.repeat(3501)]) assert.equal(validDisposeReason(bad), false)
+assert.ok(validDisposeReason('lost') && validDisposeReason('x'.repeat(3500)))
+const indexSource = read('../index.mjs')
+assert.ok(indexSource.indexOf('validDisposeReason(args.reason)') < indexSource.indexOf('await reconcile(agent, args, signal)'), 'dispose reason is validated before any cancel')
 console.log('DSH prompt contracts, generated bundle and unchanged native grants verified')

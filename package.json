@@ -23,6 +23,7 @@
     "index.mjs",
     "role-templates.mjs",
     "policy.mjs",
+    "dispose-reason.mjs",
     "LICENSE",
     "THIRD-PARTY-NOTICES.md",
     "api.mjs",

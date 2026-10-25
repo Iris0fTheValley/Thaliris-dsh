@@ -446,6 +446,8 @@ def test_dispose_releases_only_the_slot_and_never_records_completion(workspace):
     for arguments, changes, error in (
         ({"reason": "lost", "observation": json.dumps(liveness)}, {"native_controller_id": "child-id"}, "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"),
         ({"observation": json.dumps(liveness)}, {}, "INVALID_DISPOSE_ARGUMENTS"),
+        ({"reason": " \n\t", "observation": json.dumps(liveness)}, {}, "INVALID_DISPOSE_ARGUMENTS"),
+        ({"reason": "x" * 3501, "observation": json.dumps(liveness)}, {}, "INVALID_DISPOSE_ARGUMENTS"),
         ({"reason": "lost", "observation": json.dumps({**liveness, "outcome": "completed"})}, {}, "DISPOSE_OBSERVATION_FIELDS"),
         ({"reason": "lost", "observation": json.dumps({**liveness, "child_liveness": "dead"})}, {}, "DISPOSE_OBSERVATION_FIELDS"),
         ({"reason": "lost", "observation": json.dumps({**liveness, "correlation": "thaliris:other"})}, {}, "NATIVE_RESERVATION_CONFLICT"),
