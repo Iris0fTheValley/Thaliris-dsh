@@ -20,7 +20,9 @@ import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as Fork from '@deepseek-ai/dsh-subagent-fork-in-process'
 import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
+import * as TodoTool from '@deepseek-ai/dsh-tool-todo'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { assembleContextFor } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
@@ -30,6 +32,7 @@ const upstream = process.env.DSH_SOURCE!
 const helpers = await import(pathToFileURL(join(upstream, 'packages/core/agent-loop/tests/mock-adapter.ts')).href)
 const { MockAdapter, textResponse, toolCallResponse, maxTokensResponse } = helpers
 const pluginUrl = new URL('../index.mjs', import.meta.url).href
+const presetUrl = new URL('../preset.mjs', import.meta.url).href
 const presetToolsUrl = new URL('./fixtures/preset-tools.mjs', import.meta.url).href
 /** Live and persisted point reads for DSH cold resume; search is not part of these fixtures. */
 class FixtureSessionQuery extends SessionQueryEngine {
@@ -51,8 +54,17 @@ async function taskStatePath(root: string, taskId: string) {
   return join(root, '.context', 'tasks', taskId, 'state.json')
 }
 
-/** `parentPreset` composes the Controller from a native Agent preset carrying `presetTools`, as DSH's bundled presets carry file and shell tools. */
-async function setup(script: any[], provider = 'spawn', inheritRoute = false, options: { parentPreset?: boolean, roleTools?: string[], presets?: boolean } = {}) {
+/**
+ * The host row is loaded as an out-of-tree module; the selected parent is bound to a
+ * fixture Agent Preset that mounts the REAL `@thaliris/dsh-plugin/preset` child (plus a
+ * fixture tool row and one real DSH tool row). The fixture preset stands in for the
+ * product preset declaration because this reduced source host does not compose the host
+ * plane the mirrored Standard composition needs; the product preset itself is still
+ * registered by the plugin (asserted through the native roster/document below), and
+ * tests/composition-drift.mjs pins its committed composition to DSH's Standard preset.
+ */
+const FIXTURE_PRESET = 'thaliris-fixture'
+async function setup(script: any[], provider = 'spawn', inheritRoute = false, options: { roleTools?: string[], presets?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'thaliris-dsh-native-'))
   const workspace = join(directory, 'workspace')
   await mkdir(workspace)
@@ -72,19 +84,11 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false, op
   await ctx.plugin(LocalSubprocess)
   await ctx.plugin(Loader)
   await ctx.plugin(FixtureSessionQuery)
-  if (options.presets !== false) {
-    await ctx.plugin(AgentPresets, { default: 'coding' })
-    await ctx.agentPresets.register({ id: 'coding', plugins: [{ name: presetToolsUrl, config: { tools: ['preset_role_tool', 'preset_unselected_tool'] } }] })
-  }
+  if (options.presets !== false) await ctx.plugin(AgentPresets, { default: 'standard' })
   ctx.tools.register({ name: 'unselected_fixture_tool', description: 'Ambient test capability excluded from child allowlist.', parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: { schema: { type: 'object', additionalProperties: true }, render: () => [{ type: 'text', text: 'fixture' }] }, execute: async () => ({ fixture: true }) })
   const mock = new MockAdapter(script)
   ctx.llm.registerAdapter(['mock'], mock)
-  const parent = options.parentPreset
-    ? (await ctx.agents.create({ sessionId: SessionId('native-controller'), meta: { cwd: workspace, agentPreset: 'coding' }, agentOptions: { provider: 'mock', model: 'parent' },
-      setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'coding') } })).agent
-    : await ctx.agentLoop.create(SessionId('native-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
-  await ctx.sessionPersistence.flush()
   const config = { root: workspace, pythonExecutable: process.env.THALIRIS_TEST_PYTHON, corePath,
     authorityDirectory: join(directory, 'authority'), subagentProvider: provider,
     policy: { workspaces: [{ workspaceId: nativeWorkspace.id, root: workspace, enabled: true }], roles: [{ id: 'Implementer', name: 'Implementer', description: 'Editable fixture', enabled: true, tools: options.roleTools ?? [],
@@ -92,7 +96,44 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false, op
   const entryId = await ctx.loader.create({ name: pluginUrl, config })
   const entry = ctx.loader.resolve(entryId)
   await ctx.loader.await()
-  assert.ok(ctx.tools.get(names[0]!), 'Loader must import and activate the out-of-tree plugin')
+  // Global half: provides the `thaliris` service and registers the product preset; it owns
+  // no model-visible tool itself.
+  assert.ok(ctx.get('thaliris'), 'the global row must provide the thaliris Host service')
+  assert.equal(ctx.tools.get(names[0]!), undefined, 'the global row registers no model-visible tool')
+  let fixturePreset: (() => Promise<void>) | undefined
+  if (options.presets !== false) {
+    const registration = (await (ctx as any).thaliris.preset()) as { status: string, definition?: { id: string } }
+    assert.equal(registration.status, 'registered', JSON.stringify(registration))
+    assert.equal(registration.definition?.id, 'thaliris')
+    const roster = await ctx.agentPresets.list()
+    assert.ok(roster.some(preset => preset.id === 'thaliris'), 'the native roster must expose the Thaliris preset')
+    // The declared composition is the committed Standard mirror plus the Thaliris row,
+    // independent of whether this reduced host can mount the whole host plane.
+    const document = await ctx.agentPresets.readDocument('thaliris')
+    assert.match(document.content, /thaliris-agent/)
+    assert.match(document.content, /@thaliris\/dsh-plugin\/preset/)
+    assert.match(document.content, /@deepseek-ai\/dsh-tool-fs/)
+    // A real shipped tool row proves role grants reach native DSH tools, not only fixtures.
+    // It is resolved through the Loader's builtin map so the row needs no package resolution.
+    ctx.loader.builtins['thaliris-fixture-todo'] = TodoTool
+    fixturePreset = await ctx.agentPresets.register({ id: FIXTURE_PRESET, name: 'Thaliris fixture', description: 'Test-only preset carrying the real preset child.',
+      plugins: [
+        { id: 'thaliris-agent', name: presetUrl },
+        { id: 'fixture-tools', name: presetToolsUrl, config: { tools: ['preset_role_tool', 'preset_unselected_tool'] } },
+        { id: 'fixture-todo', name: 'cordis:thaliris-fixture-todo', config: { allowParallelInProgress: true } },
+      ] })
+  }
+  const parent = options.presets === false
+    ? await ctx.agentLoop.create(SessionId('native-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
+    : (await ctx.agents.create({ sessionId: SessionId('native-controller'), meta: { cwd: workspace, agentPreset: FIXTURE_PRESET },
+      agentOptions: { provider: 'mock', model: 'parent' }, setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, FIXTURE_PRESET) } })).agent
+  if (options.presets !== false) {
+    // The selected session resolves the preset-scoped tools; the global view stays clean.
+    assert.equal(ctx.tools.get(names[0]!), undefined, 'preset tools are not visible from the global tool view')
+    assert.ok(ctx.tools.get(names[0]!, parent), 'the Thaliris-selected session resolves the Controller tools')
+    assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name) || tool.name === observeTool).length, names.length + 1)
+  }
+  await ctx.sessionPersistence.flush()
   const state = async (taskId: string) => JSON.parse(await readFile(await taskStatePath(workspace, taskId), 'utf8'))
   async function jsonFiles(directory: string): Promise<string[]> {
     const result: string[] = []
@@ -121,7 +162,16 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false, op
     await ctx.fiber.dispose()
     await rm(directory, { recursive: true, force: true })
   }
-  return { ctx, parent, mock, script, config, entry, state, authority, durableBytes, execute, clean }
+  /** Wait for preset-scoped tools to (dis)appear, since re-activation follows service topology. */
+  async function waitForTools(present: boolean, scope: Agent | undefined = parent, timeout = 5000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      if (names.every(name => present ? !!ctx.tools.get(name, scope) : !ctx.tools.get(name, scope))) return
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    assert.fail(`thaliris tools did not ${present ? 'appear' : 'disappear'} within ${timeout}ms`)
+  }
+  return { ctx, parent, mock, script, config, entry, state, authority, durableBytes, execute, clean, waitForTools, fixturePreset }
 }
 
 function lastTool(options: any) {
@@ -193,7 +243,7 @@ async function closedLoop() {
     assert.equal(child!.session.inheritedEventCount, 0)
     assert.equal(child!.session.header.delegationDepth, 1, 'the dispatched child runs at the maxDepth: 1 delegation cap')
     for (const name of names) {
-      const definition = ctx.tools.get(name)!
+      const definition = ctx.tools.get(name, parent)!
       bodyDenials.push(assert.rejects(definition.execute({}, { agent: child, signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/).then(() => deniedInBody++))
     }
   })
@@ -244,11 +294,20 @@ async function closedLoop() {
     const selectedText = selectedMessages[0].content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')
     assert.deepEqual(JSON.parse(selectedText), { task_id: selectedTaskId, workstream: 'answer', role: 'Implementer', ...handoff })
 
+    // R-NO-INJECT: a root Session that did not select the preset carries no Thaliris
+    // tool, prompt section or task context, even in the same bound Workspace.
+    const other = await ctx.agentLoop.create(SessionId('other-native-root'), { provider: 'mock', model: 'parent' }, { cwd: fixture.config.root })
+    assert.equal(ctx.tools.schemas(other).filter(tool => tool.name.startsWith('thaliris_')).length, 0, 'an unselected Session sees no Thaliris tool')
+    const otherAssembly = await ctx.systemPrompt.assemble(assembleContextFor(other, signal()))
+    assert.equal(otherAssembly.sections.find(section => section.name === 'thaliris:controller-contract'), undefined, 'an unselected Session receives no Controller prompt')
+    assert.equal(otherAssembly.contexts.find(item => item.name === 'thaliris:task-context'), undefined, 'an unselected Session receives no task context')
+
     // Native Loader toggles remove precisely the plugin's effects, then remount.
     for (let cycle = 0; cycle < 2; cycle++) {
       await ctx.loader.update(fixture.entry.id, { disabled: true })
       await ctx.loader.await()
-      for (const name of names) assert.equal(ctx.tools.get(name), undefined)
+      await fixture.waitForTools(false)
+      for (const name of names) assert.equal(ctx.tools.get(name, parent), undefined)
       assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name)).length, 0)
       assert.equal((await fixture.state(selectedTaskId)).status, 'DONE', 'unload preserves durable closed ledger')
       assert.equal(ctx.agents.get(parent.id), parent)
@@ -261,7 +320,8 @@ async function closedLoop() {
       }
       await ctx.loader.update(fixture.entry.id, { disabled: false })
       await ctx.loader.await()
-      for (const name of names) assert.ok(ctx.tools.get(name))
+      await fixture.waitForTools(true)
+      for (const name of names) assert.ok(ctx.tools.get(name, parent))
       assert.equal(ctx.tools.schemas(parent).filter(tool => names.includes(tool.name)).length, names.length)
     }
     fixture.script.push(textResponse('native normal answer'))
@@ -269,10 +329,9 @@ async function closedLoop() {
     await parent.whenIdle()
     assert.equal(fixture.mock.requests.length, 9)
     assert.equal(occurrences(systemText(fixture.mock.requests.at(-1)), 'Thaliris Controller contract:'), 1, 'reload restores one root prompt contribution')
-    const other = await ctx.agentLoop.create(SessionId('other-native-root'), { provider: 'mock', model: 'parent' }, { cwd: fixture.config.root })
     const denied = await fixture.execute(names[1]!, { task_id: selectedTaskId }, other)
     assert.equal(denied.isError, true)
-    console.log('PASS Loader -> native Controller tools -> Python Core -> fresh native child -> explicit Controller close; filtering/body denial; unload/reload and ordinary native behavior')
+    console.log('PASS Loader -> native Controller tools -> Python Core -> fresh native child -> explicit Controller close; unselected-Session purity; filtering/body denial; unload/reload and ordinary native behavior')
   } finally { await fixture.clean() }
 }
 
@@ -301,7 +360,7 @@ async function failureAndBoundary() {
     const rival = await fixture.ctx.agentLoop.create(SessionId('rival'), { provider: 'mock', model: 'parent' }, { cwd: fixture.config.root })
     assert.equal((await fixture.execute(names[1]!, { task_id: ack.task_id }, rival)).isError, true)
     assert.equal((await fixture.execute(names[1]!, { task_id: ack.task_id })).isError, false, 'a rejected rival cannot bind the reloaded plugin')
-    const definition = fixture.ctx.tools.get(names[0]!)!
+    const definition = fixture.ctx.tools.get(names[0]!, fixture.parent)!
     await assert.rejects(definition.execute({ goal: 'missing caller', contract: selectedContract }, { signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/)
     await assert.rejects(definition.execute({ goal: 'forged object', contract: selectedContract }, { agent: { ...fixture.parent }, signal: signal() } as any), /THALIRIS_NATIVE_ROOT_REQUIRED/)
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: true })
@@ -348,9 +407,11 @@ async function unloadActiveChild() {
     assert.equal((await fixture.state(taskId)).status, 'ACTIVE')
     assert.equal((await fixture.authority(taskId)).status, 'ACTIVE')
     assert.equal((await fixture.state(taskId)).active_work.length, 1, 'interrupted work is not invented completion')
-    for (const name of names) assert.equal(fixture.ctx.tools.get(name), undefined)
+    await fixture.waitForTools(false)
+    for (const name of names) assert.equal(fixture.ctx.tools.get(name, fixture.parent), undefined)
     await fixture.ctx.loader.update(fixture.entry.id, { disabled: false })
     await fixture.ctx.loader.await()
+    await fixture.waitForTools(true)
     const inspected: any = await fixture.execute(names[1]!, { task_id: taskId })
     assert.equal(inspected.isError, false)
     assert.equal(inspected.value.state.status, 'ACTIVE')
@@ -492,7 +553,9 @@ async function evidenceContextAndMode() {
 async function nonResumableChild() {
   const childRequests: { tools: string[], text: string }[] = []
   const child = (answer: string) => (options: any) => { childRequests.push({ tools: (options.tools ?? []).map((tool: any) => tool.name), text: JSON.stringify(options.messages) }); return textResponse(answer) }
-  const fixture = await setup([child('answer 42'), child('supplemental evidence read')], 'spawn', false, { parentPreset: true, roleTools: ['preset_role_tool'] })
+  // The role grants one fixture tool, one real native DSH tool (todo_write) and one name
+  // this host does not provide: the dispatch must apply the resolvable grants only.
+  const fixture = await setup([child('answer 42'), child('supplemental evidence read')], 'spawn', false, { roleTools: ['preset_role_tool', 'todo_write', 'not_a_host_tool'] })
   const { ctx, parent } = fixture
   try {
     const started: any = await fixture.execute(names[0]!, { goal: 'Non-resumable child', contract: selectedContract })
@@ -508,7 +571,7 @@ async function nonResumableChild() {
     assert.equal(supplemental.length, 1)
     const childId = SessionId(result.value.child_id)
     assert.ok(childRequests.length >= 1 && childRequests.some(request => request.text.includes('SUPPLEMENTAL_EVIDENCE_SENTINEL')), 'the mid-dispatch message reaches the child')
-    for (const request of childRequests) assert.deepEqual(request.tools, ['preset_role_tool'], 'the child joins the parent preset and keeps exactly its role allowlist, including after a mid-dispatch message')
+    for (const request of childRequests) assert.deepEqual([...request.tools].sort(), ['preset_role_tool', 'todo_write'], 'the child joins the parent preset and keeps exactly its resolvable role allowlist, including after a mid-dispatch message')
     assert.deepEqual(ctx.tools.schemas(parent).map(tool => tool.name).filter(name => name.startsWith('preset_')).sort(), ['preset_role_tool', 'preset_unselected_tool'])
     assert.equal(ctx.agents.get(childId), undefined)
     const handle = await ctx.sessionPersistence.open(childId, 'read')
@@ -520,7 +583,10 @@ async function nonResumableChild() {
     assert.equal(own[selected].data.agentPreset, `thaliris-dispatch-${childId}`)
     assert.equal(own[descriptor].data.mode, 'continuable')
     assert.match(own[descriptor].data.label, /^thaliris:/)
-    assert.deepEqual((await ctx.agentPresets.list()).map(preset => preset.id), ['coding'], 'the gate exists only while its dispatch runs')
+    const presetIds = (await ctx.agentPresets.list()).map(preset => preset.id)
+    assert.deepEqual(presetIds.filter(id => id.startsWith('thaliris-dispatch-')), [], 'the gate exists only while its dispatch runs')
+    assert.ok(presetIds.includes('thaliris'), 'the product preset stays declared')
+    assert.ok(presetIds.includes(FIXTURE_PRESET), 'the selected fixture preset stays declared')
     const requests = fixture.mock.requests.length
     const refused = (error: any) => error?.code === 'NOT_RESUMABLE' && error.cause?.code === 'agent-preset/not-found'
     const refuse = async (state: string) => {
@@ -533,23 +599,29 @@ async function nonResumableChild() {
     await refuse('adapter loaded')
     await ctx.loader.update(fixture.entry.id, { disabled: true })
     await ctx.loader.await()
-    for (const name of names) assert.equal(ctx.tools.get(name), undefined)
+    await fixture.waitForTools(false)
+    for (const name of names) assert.equal(ctx.tools.get(name, parent), undefined)
     await refuse('adapter unloaded')
     await ctx.loader.update(fixture.entry.id, { disabled: false })
     await ctx.loader.await()
+    await fixture.waitForTools(true)
     await refuse('adapter reloaded')
     console.log('PASS dispatched child joins the parent preset with its exact allowlist, unchanged by a mid-dispatch Controller message; DSH refuses to continue it after dispatch with the adapter loaded, unloaded or reloaded')
   } finally { await fixture.clean() }
 
+  // No Agent Preset registry (the headless/no-mode host): the global row must still load,
+  // and it must expose no model-visible surface at all.
   const ungated = await setup([], 'spawn', false, { presets: false })
   try {
-    const started: any = await ungated.execute(names[0]!, { goal: 'No resume gate', contract: selectedContract })
-    const result: any = await ungated.execute(names[2]!, { task_id: started.value.task_id, base_revision: started.value.revision, workstream: 'ungated', role: 'Implementer', handoff })
-    assert.equal(result.isError, true)
-    assert.match(JSON.stringify(result.content), /THALIRIS_CHILD_RESUME_GATE_UNAVAILABLE/)
+    const { ctx: host, parent: unselected } = ungated
+    assert.ok(host.get('thaliris'), 'the global row loads and provides its Host service without a preset registry')
+    assert.equal(host.get('agentPresets'), undefined, 'the reduced host has no Agent Preset registry')
+    assert.equal(host.tools.get(names[0]!), undefined, 'no Thaliris tool is registered at the host scope')
+    assert.equal(host.tools.schemas(unselected).filter(tool => names.includes(tool.name) || tool.name === observeTool).length, 0, 'an unselected session sees no Thaliris tool')
+    const assembly = await host.systemPrompt.assemble(assembleContextFor(unselected, signal()))
+    assert.equal(assembly.sections.find(section => section.name === 'thaliris:controller-contract'), undefined, 'no Controller prompt without the preset')
     assert.equal(ungated.mock.requests.length, 0)
-    assert.equal((await ungated.state(started.value.task_id)).revision, started.value.revision, 'refused before any reservation')
-    console.log('PASS without native Agent presets the dispatch fails closed before reserving or starting a child')
+    console.log('PASS without a native Agent Preset registry the global row still loads and exposes no model-visible Thaliris surface')
   } finally { await ungated.clean() }
 }
 

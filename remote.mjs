@@ -10,4 +10,6 @@ const method = (name, parameters, cancellable = false) => ({
 export const remoteContribution = { package: '@thaliris/dsh-plugin', descriptors: [
   method('templates', []), method('providers', []), method('toolCatalog', []), method('diagnostics', ['sessionId', 'taskId'], true),
   method('approveMemory', ['sessionId', 'taskId', 'proposalId'], true),
+  // Human-only setup surface: no ids, tolerant status results, cancellable long operations.
+  method('setupStatus', []), method('prepareRuntime', [], true), method('recheckRuntime', [], true),
 ] }

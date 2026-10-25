@@ -20,12 +20,18 @@ export default class ThalirisController extends TypertRemoteService {
     identity(sessionId); identity(taskId); identity(proposalId)
     return this.ctx.thaliris.approveMemory(sessionId, taskId, proposalId, signal)
   }
+  // First-run setup is a human-only Gateway surface: these methods are never registered as
+  // model tools, take no caller ids (nothing to address), and return tolerant status rather
+  // than raw exceptions, so a failed setup keeps the plugin loaded and the page informative.
+  setupStatus() { return this.ctx.thaliris.setupStatus() }
+  prepareRuntime(signal) { return this.ctx.thaliris.prepareRuntime(signal) }
+  recheckRuntime(signal) { return this.ctx.thaliris.recheckRuntime(signal) }
 }
 function identity(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 128) throw new Error('THALIRIS_NATIVE_ID_REQUIRED')
 }
 // Native standard-decorator API used from JavaScript without a custom wire schema.
-for (const name of ['templates', 'providers', 'toolCatalog', 'diagnostics', 'approveMemory']) {
+for (const name of ['templates', 'providers', 'toolCatalog', 'diagnostics', 'approveMemory', 'setupStatus', 'prepareRuntime', 'recheckRuntime']) {
   Remote(ThalirisController.prototype[name], { kind: 'method', name, static: false, private: false,
     addInitializer(initialize) { initializers.push(initialize) } })
 }

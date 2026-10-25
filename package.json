@@ -1,6 +1,6 @@
 {
   "name": "@thaliris/dsh-plugin",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "license": "MIT",
   "repository": "https://github.com/Iris0fTheValley/Thaliris-dsh.git",
   "bugs": "https://github.com/Iris0fTheValley/Thaliris-dsh/issues",
@@ -9,6 +9,7 @@
   "exports": {
     ".": "./index.mjs",
     "./api": "./api.mjs",
+    "./preset": "./preset.mjs",
     "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./remote": {
@@ -22,6 +23,10 @@
   },
   "files": [
     "index.mjs",
+    "preset.mjs",
+    "setup.mjs",
+    "composition.mjs",
+    "build-composition.mjs",
     "role-templates.mjs",
     "policy.mjs",
     "LICENSE",
@@ -46,6 +51,8 @@
     "client/remote-types.ts",
     "client/policy-controller.ts",
     "client/native-controller.ts",
+    "client/setup-controller.ts",
+    "client/mode-controller.ts",
     "client/ThalirisPage.tsx",
     "client/locales.ts",
     "client/ThalirisPage.module.css",
@@ -54,9 +61,11 @@
   ],
   "scripts": {
     "build:bundle": "node build-bundle.mjs",
+    "build:composition": "node build-composition.mjs",
     "build:client": "node build-client.mjs",
     "test:native": "node tests/run-native.mjs",
     "test:prompts": "node tests/prompt-contract.mjs",
+    "test:composition": "node tests/composition-drift.mjs",
     "test:client": "node tests/run-client.mjs",
     "test:install": "node tests/run-package-smoke.mjs"
   },

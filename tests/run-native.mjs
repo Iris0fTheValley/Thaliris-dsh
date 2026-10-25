@@ -23,7 +23,7 @@ const base = typescript.parseConfigFileTextToJson('tsconfig.base.json', readFile
 const paths = Object.fromEntries(Object.entries(base.compilerOptions.paths).map(([key, values]) => [key, values.map(value => resolve(source, value))]))
 writeFileSync(tsconfig, JSON.stringify({ extends: resolve(source, 'tsconfig.base.json'), compilerOptions: { paths: { ...paths, zod: [requireDomain.resolve('zod')] } } }))
 try {
-for (const test of (process.argv.length > 2 ? process.argv.slice(2) : ['native-loop.ts', 'product-runtime.ts'])) {
+for (const test of (process.argv.length > 2 ? process.argv.slice(2) : ['composition-drift.mjs', 'native-loop.ts', 'product-runtime.ts'])) {
 const script = fileURLToPath(new URL(test, import.meta.url))
 const child = spawnSync(process.execPath, ['--import', pathToFileURL(requireSource.resolve('tsx/esm')).href, script], {
   cwd: source, stdio: 'inherit', timeout: 180000,

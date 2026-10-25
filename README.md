@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.4.1。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.5.0。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -211,7 +211,9 @@ thaliris-core --root . --task-id "$TASK_ID" task-status
 
 @thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.2，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
 
-DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不授予工具且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
+自 0.5.0 起，插件以**可选的原生 Agent Preset 模式**接入：安装后 Thaliris 只是出现在 DSH 的原生 Agent Preset 列表里，默认不选中、也不是默认模式；未选择 Thaliris 的普通会话不会获得 Controller 提示词、任务工具或动态任务上下文。选择与默认完全使用 DSH 原生交互，不需要第二套开关。
+
+DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不固定模型，并按角色能力授予精选的 DSH 原生工具（只读角色只拿到读取类工具，见[原生角色工具权限](#原生角色工具权限)）；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
 
 原生 root Controller 获得以下工具，子代理永远看不到它们：
 
@@ -236,24 +238,109 @@ Core 0.5.0 增加项目级 identity 层：一份带版本、纳入仓库跟踪�
 
 Memory 是独立可选能力，默认关闭。可单独安装 memory capability 和本地文本 provider；task routing 和 close 无需启用 Memory 或 client UI。没有 embeddings/vector RAG 或自动检索；Memory 读取受授权控制，写入遵循用户许可和 Core task 检查。详细边界见[能力说明](CAPABILITIES.md)和[客户端契约](CLIENT-CONTRACT.md)。
 
-## 安装与配置
+## 安装与首次使用
 
-构建需要 Node.js 24.9+（与上游 DSH `master` 的 `engines` 一致），运行 Core 需要 Python 3.11+。DSH plugin 0.4.1 在 `engines.dsh` 中声明接口范围 `>=0.2.1-rc.2 <0.2.2-0`：已发布的 `0.2.1-rc.2` 与 `0.2.1-rc.3` 均可直接安装，不需要精确版本豁免，也不要求固定 revision。更早的 DSH（如 `dsh-v0.2.1-alpha.1`）请使用 DSH plugin 0.3.2。从兼容的 DSH/Core 配对构建本地 archive；当前配对和版本来源见[Core baseline](CORE-BASELINE.md)。构建 bundle patch 和共享 Web/Desktop client，然后在仓库根目录及两个可选 Memory 组件目录分别打包：
+DSH plugin 0.5.0 在 `engines.dsh` 中声明接口范围 `>=0.2.1-rc.2 <0.2.2-0`：已发布的 `0.2.1-rc.2` 与 `0.2.1-rc.3` 均可直接安装，不需要精确版本豁免，也不要求固定 revision；更早的 DSH（如 `dsh-v0.2.1-alpha.1`）请使用 DSH plugin 0.3.2。安装不需要手工打包、填写绝对路径或编辑 profile；`lib/client.js` 等产物随包发布，包内没有 install hook。
 
-~~~sh
-npm run build:bundle
-DSH_SOURCE="/path/to/compatible-dsh-checkout" npm run build:client
-npm pack
-~~~
+### 作为普通 DSH 插件安装
 
-通过 DSH Plugin Manager 安装主插件 archive。只有需要 Memory 时才一并安装两个可选 archive：
+**Desktop / Web（图形界面，推荐）**
 
-~~~sh
-PROFILE="your-profile"
-ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.4.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.2.0.tgz"
-~~~
+1. 打开 DSH 的 **Plugins** 页面从 GitHub 安装，或新建会话后在模式选择器切到 **Creator mode**，让模型用原生 `plugin_manager` 安装同一地址：`github:Iris0fTheValley/Thaliris-dsh`。
+2. 安装完成后**重启 DSH**，再打开一个会话检查 Settings → Agent presets 中是否出现 Thaliris。
 
-生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。
+**Web / headless（命令行）**
+
+```sh
+dsh plugin --profile web add github:Iris0fTheValley/Thaliris-dsh
+```
+
+安装后同样需要重启对应的 host。
+
+> **安装地址。** 规范安装地址是 `github:Iris0fTheValley/Thaliris-dsh`（默认分支，0.5.0 起）。需要固定版本时使用 release tag，例如 `github:Iris0fTheValley/Thaliris-dsh#v0.5.0`（Desktop Plugins 页面填入同一地址）。
+
+原生限制需要如实了解：
+
+- `plugin_manager` 只在 **Creator mode**（`cordis` preset）里可用；普通 Standard 会话**没有**安装工具。所以“让模型安装”必须先切到 Creator mode。
+- 安装、升级、禁用、移除都是宿主进程的插件变更：应**重启 DSH** 使其确定生效。原生 manager 通常返回 `restart-required`；原因可能是 `unmanaged-plugin`（变更触达的是在插件列表之外运行的插件——Thaliris 的 Agent Preset 由插件在运行时注册）。
+- 通过 npm 安装的 `dsh` CLI **不能**管理 Desktop 专属 profile（会报 `profile "desktop" is managed exclusively by the Electron application`）。Desktop 请在 Plugins 页面操作，或完全退出 Desktop 后使用 Desktop 自带的 CLI。
+- 从 GitHub 安装需要主机能访问 GitHub，并具备 git 与 pnpm（Desktop 使用其内置 pnpm）。
+
+### 首次使用：自动准备 Core 运行时
+
+安装并重启后插件已经加载。Thaliris 模式在安装、启用或未选择的会话里都不做 I/O；真正使用 Core 的**第一次 Thaliris 工具调用**会按需准备运行时（也可由设置页的人为动作触发）。不需要单独安装全局 Python：优先使用 DSH 自带的 CPython（Desktop 随附），没有时回退到 PATH 上 ≥3.11 的 CPython；不需要 pip、构建后端或任何第三方全局工具，Node 由 DSH 自身提供：
+
+1. 检测 Python：显式配置 → `THALIRIS_PYTHON` → `%DSH_HOME%\dsh-runtimes\*\dependencies\python`（DSH Desktop 自带 CPython 3.12）→ PATH 上的 `python3`/`python`；要求 CPython ≥ 3.11。
+2. 在 authority 目录下创建 `--without-pip` 的隔离 venv。
+3. 用 Node `fetch` 下载 `core.lock.json` 固定的 Core 源码 tarball，先校验 SHA-256，再以纯拷贝方式安装（无 pip、无构建后端、无全局工具）。
+4. 在 venv 中验证 Core 版本与 state schema，并原子写入 `runtime.json`。
+
+本机实测：冷启动约 **1.6 秒**（DSH 自带 CPython 3.12、网络正常时）；同一进程内再次调用直接命中内存；重启后为一次导入探测。首次工具调用在 bridge 超时（默认 30 秒）内完成准备；准备失败不会让插件加载失败，工具调用以结构化错误失败，并在设置页给出恢复建议。
+
+- authority 目录默认 `%USERPROFILE%\.thaliris\<profile>`（Linux/macOS 为 `~/.thaliris/<profile>`），必须在 Workspace 之外，路径上不能有符号链接或 junction。
+- Thaliris 设置页 → 常规 → “首次运行设置”会显示运行时状态、本进程是否已验证、固定 Core 版本、检测到的 Python/Core 版本、authority 目录、当前步骤/耗时，以及失败代码、恢复文本与诊断细节，并提供显式按钮“准备 Thaliris 运行时”（失败后为重试）、“重新检查运行时”和“刷新状态”。页面加载时不会自动准备任何东西；Standard 或未选择 Thaliris 的会话也不会准备。
+- 手动覆盖在“手动运行时路径（可选）”中编辑：`pythonExecutable`、`corePath`、`authorityDirectory` 与 policy 一起经原生 Settings 的修订栅栏保存；清空字段即恢复默认，非绝对路径会被拒绝。保存后点“重新检查运行时”让主机校验覆盖值。
+- 离线环境可把与 `core.lock.json` 匹配的 tarball 放到本地，并用 host 进程环境变量 `THALIRIS_CORE_TARBALL` 指定。
+- 常见失败代码都带恢复文本：`THALIRIS_PYTHON_NOT_FOUND`、`THALIRIS_PYTHON_VERSION_UNSUPPORTED`、`THALIRIS_SOURCE_FETCH_FAILED`、`THALIRIS_SOURCE_HASH_MISMATCH`、`THALIRIS_CORE_VERIFY_FAILED`、`THALIRIS_CORE_VERSION_MISMATCH`、`THALIRIS_AUTHORITY_UNSAFE`、`THALIRIS_RUNTIME_PROVISIONING`。插件始终保持加载，设置页仍可打开。
+
+**Workspace 自动绑定只在一种情况下发生：** `policy.workspaces` 为空，并且当前 Workspace 的持久 root Session 明确选择了 Thaliris 模式。此时插件把该 Workspace 的 native id 与 canonical root 追加为一条启用绑定（只写一次，并在设置页/诊断中报告）。列表非空时绝不自动追加，未选择 Thaliris 的会话也永远不会触发绑定。Thaliris 设置页 → 上下文（Context）会显示每条绑定，并给主机报告的自动绑定加上“首次使用 Thaliris 时自动绑定”标记；其余情况在那里手工选择准确的 native Workspace ID 与 root 绑定。注意该设置页拿不到真正的“当前 Workspace”，因此“绑定最近使用的工作区”按原生 Workspace/Session 快照选择会话活动最新的 Workspace；它只暂存绑定，保存后才写入。任务授权锚定在（root Session id, Workspace id）上：新建会话或 Workspace 重新注册后，旧任务不会自动恢复。
+
+### 选择模式与设置默认
+
+- 安装并重启后，Thaliris 出现在原生 **Agent Presets** 列表（Settings → Agent presets，以及新会话的模式选择器）的 **Custom** 分组，preset id 为 `thaliris`、显示名 `Thaliris`、order 10，排在四个内置模式之后；它**不是当前选择，也不是默认模式**，默认仍是 `standard`，普通会话行为不变。
+- 为单个会话选择：新建会话时在模式选择器选 Thaliris。DSH 只允许在空白会话上切换模式；已经开始（或完成过 turn）的会话不能在原地切换。
+- 设为默认：Settings → Agent presets → “Set as new task default”；或在 Thaliris 设置页 → 常规 → “Agent 预设和新会话默认值”里查看预设健康状况（正常 / 已注册但不可用 / 未注册）、原生默认值、已保存的覆盖与最终生效默认值，并用“将 Thaliris 设为新会话默认预设”/“恢复原生默认值”两个显式动作写入原生 `agent-preset-registry.selectedDefault`（与 DSH 自己的模式选择器相同的调用，带 Settings 修订栅栏）。页面加载时不会写任何默认值。默认只影响**新**会话，已有会话永远不会被重新组合（它们的 `agentPreset` 不变）。
+- **悬空默认风险**：把 Thaliris 设为默认后，如果禁用或移除插件，保存的默认会指向不存在的 preset，未命名的新会话创建会失败（`agent-preset/not-found`），DSH 自身不会自愈。设置页在该状态下显示警告与修复提示（“恢复原生默认值”即可修复）；禁用/移除前请先恢复为原生默认值（通常是 `standard`）。
+- headless 没有 Agent Preset registry：那里不会出现模式，插件仍能加载，普通会话行为不变；Thaliris 模式只存在于支持 Agent Preset 的 Web/Desktop 宿主。
+
+### 原生角色工具权限
+
+角色模板不再把 `tools` 留空，而是按角色能力授予一组精选、版本稳定的 DSH 原生工具。派发时只保留角色记录允许、且当前宿主 catalog 里真实存在的工具；未知名字会被过滤并记录诊断，不会让子代理创建失败。`thaliris_task_*`、`thaliris_workstream`、`thaliris_reconcile` 等 Controller/管理工具永远不会成为角色授权。
+
+| 角色 | 原生工具授权 |
+| --- | --- |
+| Investigator | `read`, `glob`, `grep`, `bash`, `pwsh`, `job_list`, `job_output`, `web_fetch`, `web_search`, `todo_write`, `skill` |
+| Implementer / Focused Implementer | `read`, `write`, `edit`, `glob`, `grep`, `bash`, `pwsh`, `job_list`, `job_output`, `job_kill`, `terminal_list`, `terminal_open`, `terminal_read`, `terminal_send`, `terminal_signal`, `terminal_close`, `web_fetch`, `web_search`, `todo_write`, `skill`, `present` |
+| Reviewer / Reasoning Specialist | `read`, `glob`, `grep`, `web_fetch`, `web_search` |
+| Curator | `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `skill` |
+
+Reviewer 与 Reasoning Specialist 的职责是独立挑战候选与问题框架，不是改代码：它们只拿到读取类工具，没有 `write`/`edit`、没有 shell、没有后台任务和终端，所以“只读”由原生工具授权保证，而不是只靠提示词约束。Curator 能编辑文档但没有 shell；Investigator 可以用 shell 取证，但没有文件编辑工具。
+
+`tools: []` 仍然合法，表示该角色不授予任何原生工具（只有带 evidence association 的派发才会有 `thaliris_observe`）。模板和推荐权限只影响“新复制的模板”，**插件不会静默改写用户已保存的角色记录**。对从旧版本升级上来的用户，Thaliris 设置页 → 常规 → “推荐的原生权限”只列出已启用且工具授权为空的角色，逐个标注推荐工具是否在当前宿主 catalog 中，并且只在你点击“应用推荐权限”时把这些值写进 `policy.roles`（与普通保存同一修订栅栏；页面加载和渲染都不写入）。没有随附模板的角色不会得到猜测的推荐；用户可以应用、忽略或自己编辑。
+
+### 升级、禁用与重新启用
+
+- 用户配置（角色、模型路由、Workspace 绑定、Memory 设置）保存在当前 profile 的 `cordis.patch.yml`；任务状态与授权锚点保存在 authority 目录（Workspace 之外）。原生 manager 在安装/升级/禁用/移除时只改 `package.json` 与锁文件，不重写用户 patch 行，也不删除任务状态。
+- 安装、升级、禁用、移除后都应重启 DSH（原生 manager 报 `restart-required`，见上）。重启后检查 Settings → Agent presets 是否仍有 Thaliris，以及 Thaliris 设置页的运行时状态。
+- 行 id `thaliris`/`thaliris-api` 与命名空间 `thaliris` 保持稳定；preset id 固定为 `thaliris`，因此升级后旧配置继续加载，记录过该 preset 的会话也仍能解析。禁用或移除插件后，这些会话无法恢复（`agent-preset/not-found`）；重新启用并重启后恢复。
+- 本仓库的文档和测试**不**代表已经改过任何一台正在使用的 Desktop profile；对 live Desktop 的升级/卸载需要用户自己的明确操作与重启。
+
+### 验证范围
+
+- 仓库内可跑的检查：`node tests/prompt-contract.mjs`（包/预设/契约）、`node tests/composition-drift.mjs`（需 `DSH_SOURCE`）、`npm run test:native`（真实 Loader + 脚本模型）、`npm run test:client`（共享客户端，20/20 通过，含 setup/mode/推荐权限/命名空间缺失等新用例）、`npm run test:install`（用 0.5.0 归档的打包安装 smoke），以及 bridge/Core 的 66 个 pytest（对 provisioned runtime）。设置页的交互是用真实客户端模块栈在 jsdom 中验证的。
+- 已在隔离的 0.2.1-rc.3 真实宿主（独立 `DSH_HOME`，不触碰 Desktop profile）验证：安装 0.5.0 后两行 ACTIVE、preset roster 出现且默认仍为 `standard`、Web host 正常启动且无预设挂载诊断、headless 无 registry 也能启动。
+- 尚未验证：把 0.5.0 安装进正在使用的 Desktop profile 并重启观察、在真实浏览器/桌面 UI 里逐项操作设置页（包括真实冷启动点击“准备 Thaliris 运行时”）、rc.2 实机（CI 的 tag matrix 覆盖 rc.2/rc.3 的 drift gate）。仓库或磁盘上的文件更新不证明正在运行的 Host 已加载新版本。
+
+## 维护者：构建与发布
+
+- 版本配对：插件 0.5.0、Core 0.5.2（[core.lock.json](core.lock.json)）、Node.js ≥24.9、`engines.dsh >=0.2.1-rc.2 <0.2.2-0`。当前配对与来源见 [Core baseline](CORE-BASELINE.md)。
+- 从源码构建（发布者流程；普通用户不需要）：
+
+  ```sh
+  npm run build:bundle
+  DSH_SOURCE="/path/to/compatible-dsh-checkout" npm run build:client
+  npm pack
+  ```
+
+  `lib/client.js` 已预构建并随包发布；包内没有 install 脚本。
+- **composition 镜像维护（重要）**：programmatic Agent Preset 会替换整个 agent composition，所以 `composition.mjs` 镜像了 DSH Standard preset 的 22 个顶层子行（含 group/isolate/平台条件），末尾追加 `{ id: "thaliris-agent", name: "@thaliris/dsh-plugin/preset" }`。DSH 修改 Standard preset 时，漂移门禁会明确失败而不是静默丢掉原生工具：
+
+  ```sh
+  DSH_SOURCE=/path/to/dsh-checkout node tests/composition-drift.mjs  # 失败信息里给出再生成命令
+  DSH_SOURCE=/path/to/dsh-checkout node build-composition.mjs        # 重新生成并提交 composition.mjs
+  ```
+
+  CI 在 `dsh-v0.2.1-rc.2` / `dsh-v0.2.1-rc.3` 两个 tag 上运行 drift gate，并在 rc.3 上验证重生成后的 `composition.mjs` 没有差异。
+- 初始角色模板与推荐原生工具在 `role-templates.mjs`；`build-bundle.mjs` 据此生成 `cordis.patch.yml`。
 
 更多约束和验证范围见[能力说明](CAPABILITIES.md)、[客户端契约](CLIENT-CONTRACT.md)、[Core baseline](CORE-BASELINE.md)、[提示词契约](PROMPT-CONTRACT.md)。

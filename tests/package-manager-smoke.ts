@@ -2,10 +2,13 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { boot, createRuntimeResolution, initProfile, PluginPackages, readProfilePatches, readProfileManifest, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
 import Hmr from '@deepseek-ai/dsh-hmr'
 import PluginManager from '@deepseek-ai/dsh-plugin-manager'
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
@@ -53,6 +56,13 @@ mkdirSync(workspaceRoot, { recursive: true })
 mkdirSync(authorityDirectory, { recursive: true })
 execFileSync('git', ['init', '-q', workspaceRoot])
 writeFileSync(anchor, JSON.stringify({ name: 'thaliris-isolated-installation', private: true, dependencies: {} }, null, 2))
+// The installed package resolves its DSH peer modules from the host installation in a real
+// profile; this fixture profile has no host packages, so expose the version-matched ones the
+// plugin imports (schemastery/dsh-tools/dsh-typert-protocol) one level above the profile.
+mkdirSync(join(home, 'node_modules', '@deepseek-ai'), { recursive: true })
+for (const dependency of ['schemastery', 'dsh-tools', 'dsh-typert-protocol']) {
+  symlinkSync(join(process.env.DSH_SOURCE!, 'node_modules', '@deepseek-ai', dependency), join(home, 'node_modules', '@deepseek-ai', dependency), 'junction')
+}
 mkdirSync(profileDirectory, { recursive: true })
 writeFileSync(join(profileDirectory, '.npmrc'), 'auto-install-peers=false\noffline=true\n')
 initProfile(profileDirectory, ['core'])
@@ -102,6 +112,15 @@ let stage = 'boot'
 const assertApplied = (result: { application: string; error?: unknown }, action: string): void => {
   assert.equal(result.application, 'applied', `${action} failed: ${JSON.stringify(result)}`)
 }
+// The mode preset is registered from the loaded plugin (outside the profile plugin list), so a
+// package/lifecycle change that reaches it is reported as restart-required/unmanaged-plugin
+// instead of hot-applied. The saved profile state must still change immediately; the restart
+// requirement is documented product behavior, not a failed operation.
+const assertManagedChange = (result: { application: string; changed?: boolean; restartReason?: string; error?: unknown }, action: string): void => {
+  if (result.application === 'applied') return
+  assert.equal(result.application, 'restart-required', `${action} failed: ${JSON.stringify(result)}`)
+  assert.equal(result.restartReason, 'unmanaged-plugin', `${action} has an unexpected restart reason: ${JSON.stringify(result)}`)
+}
 const manager = async () => {
   const service = owner!.get('pluginManager')
   if (service) return service
@@ -120,16 +139,18 @@ const install = async (name: string, filename: string) => {
   assert.equal((await bundle(name))?.installed, true)
 }
 const enableDisableRemove = async (name: string) => {
-  assertApplied(await (await manager()).setBundleEnabled(name, true), `enable ${name}`)
+  assertManagedChange(await (await manager()).setBundleEnabled(name, true), `enable ${name}`)
   assert.equal((await bundle(name))?.enabled, true)
-  assertApplied(await (await manager()).setBundleEnabled(name, false), `disable ${name}`)
+  assertManagedChange(await (await manager()).setBundleEnabled(name, false), `disable ${name}`)
   assert.equal((await bundle(name))?.enabled, false)
-  assertApplied(await (await manager()).removeBundle(name), `remove ${name}`)
+  const removed = await (await manager()).removeBundle(name)
+  assert.equal(removed.changed, true, `remove ${name} changed nothing: ${JSON.stringify(removed)}`)
+  assertManagedChange(removed, `remove ${name}`)
   assert.equal(await bundle(name), undefined)
 }
 
 try {
-  owner = await boot('product', join(profileDirectory, 'cordis.yml'), readProfilePatches('product', profile as never), ctx => {
+  owner = await boot('product', join(profileDirectory, 'cordis.yml'), readProfilePatches('product', profile as never), async ctx => {
     ctx.provide('appReady', { onReady: (listener: () => void) => { listener(); return () => {} } })
     ctx.provide('profileContext', profile as never)
     ctx.provide('agents', { get: (id: string) => id === rootAgent?.id ? rootAgent : undefined, roots: () => rootAgent ? [rootAgent] : [] })
@@ -147,6 +168,10 @@ try {
     })
     ctx.provide('subagents', { getProvider: () => undefined })
     ctx.provide('llm', { resolveModelInfo: async () => undefined })
+    // Native Agent Preset registry: it is what makes the packed plugin declare its
+    // persistent `thaliris` preset (the mode) and what proves the default is untouched.
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(AgentPresets, { default: 'standard' })
     ctx.loader.builtins.manager = PluginManager
   })
   await owner.plugin(Timer)
@@ -172,13 +197,18 @@ try {
   await install('@thaliris/dsh-plugin', archives[0][1])
   const installedClientRoot = join(profileDirectory, 'node_modules', '@thaliris', 'dsh-plugin')
   const installedManifest = JSON.parse(readFileSync(join(installedClientRoot, 'package.json'), 'utf8'))
+  assert.equal(installedManifest.version, '0.5.0')
   assert.equal(installedManifest.exports['./client'], './lib/client.js')
+  assert.equal(installedManifest.exports['./preset'], './preset.mjs', 'the installed package exposes the preset-scoped half')
+  assert.ok(installedManifest.files.includes('preset.mjs') && installedManifest.files.includes('composition.mjs'))
   assert.equal(installedManifest.dsh.client.platform, 'web')
   assert.ok(installedManifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings'))
   assert.match(readFileSync(join(installedClientRoot, 'lib', 'client.js'), 'utf8'), /window\.__ModuleLoader__\.load/)
+  assert.ok(!('disabled' in JSON.parse(readFileSync(join(installedClientRoot, 'cordis.patch.yml'), 'utf8'))[0].insert[0]), 'the shipped global row is enabled')
 
   await install('@thaliris/dsh-memory', archives[1][1])
   await install('@thaliris/dsh-memory-local', archives[2][1])
+  assert.deepEqual([...tools.keys()], [], 'an installed-but-unselected bundle registers no model-visible tool')
   for (const name of ['@thaliris/dsh-plugin', '@thaliris/dsh-memory', '@thaliris/dsh-memory-local']) {
     assertApplied(await (await manager()).setBundleEnabled(name, true), `select ${name} bundle`)
   }
@@ -208,7 +238,7 @@ try {
     assert.ok(listed, `native Plugin Manager did not expose ${moduleName}`)
     assert.ok(listed.patchId, `native Plugin Manager did not expose a persistent control for ${moduleName}`)
     const result = await (await manager()).setPluginEnabled(listed.entryId, enabled)
-    assertApplied(result, `${enabled ? 'enable' : 'disable'} ${moduleName}`)
+    assertManagedChange(result, `${enabled ? 'enable' : 'disable'} ${moduleName}`)
     assert.equal((await (await manager()).listPlugins()).find(row => row.entryId === listed.entryId)?.enabled, enabled)
   }
 
@@ -223,15 +253,36 @@ try {
     },
   }
   await setPluginEnabled('@thaliris/dsh-plugin', true, runtimeConfig)
-  stage = 'activate API and optional memory'
+  stage = 'register the packed preset'
   assert.ok(owner.get('thaliris'), 'enabling the packed runtime must provide its native Host service')
-  assert.deepEqual([...tools.keys()].sort(), [
+  const presetState: any = await (owner.get('thaliris') as any).preset()
+  assert.equal(presetState.status, 'registered', JSON.stringify(presetState))
+  assert.equal(presetState.definition?.id, 'thaliris')
+  const roster = await (owner as any).agentPresets.list()
+  assert.ok(roster.some((preset: any) => preset.id === 'thaliris' && preset.name === 'Thaliris'), 'the packed plugin declares the Thaliris mode on the native roster')
+  assert.equal((owner as any).agentPresets.defaultId, 'standard', 'the shipped plugin must not select Thaliris for new sessions')
+  const document = await (owner as any).agentPresets.readDocument('thaliris')
+  assert.match(document.content, /thaliris-agent/)
+  assert.match(document.content, /@thaliris\/dsh-plugin\/preset/)
+  assert.match(document.content, /@deepseek-ai\/dsh-tool-fs/, 'the declared composition mirrors the Standard native tools')
+  assert.match(document.content, /@deepseek-ai\/dsh-tool-bash/)
+  // The reduced smoke host cannot mount the whole mirrored Standard composition (its host
+  // plane is stubbed), so the model-visible half is exercised through a fixture declaration
+  // that mounts the installed package's real `./preset` subpath. The absolute file URL keeps
+  // row resolution independent of the registering context's baseUrl.
+  const installedPresetUrl = pathToFileURL(join(installedClientRoot, 'preset.mjs')).href
+  await (owner as any).agentPresets.register({ id: 'thaliris-smoke-fixture', name: 'Thaliris smoke fixture',
+    plugins: [{ id: 'thaliris-agent', name: installedPresetUrl }] })
+  stage = 'await the packed preset child'
+  for (let attempt = 0; attempt < 250 && tools.size === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual([...tools.keys()].filter(name => name.startsWith('thaliris_')).sort(), [
     'thaliris_memory_propose', 'thaliris_memory_read', 'thaliris_memory_search', 'thaliris_observe', 'thaliris_reconcile',
     'thaliris_task_close', 'thaliris_task_context', 'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge',
     'thaliris_task_identity_note', 'thaliris_task_identity_relate', 'thaliris_task_identity_suggest', 'thaliris_task_inspect', 'thaliris_task_judge', 'thaliris_task_mode',
     'thaliris_task_register', 'thaliris_task_start', 'thaliris_task_status', 'thaliris_workstream',
-  ])
+  ], 'the installed preset child registers the 16 Controller, 3 memory and dispatch-granted evidence tools')
 
+  stage = 'activate API and optional memory'
   await setPluginEnabled('@thaliris/dsh-plugin/api', true)
   await setPluginEnabled('@thaliris/dsh-memory', true)
   await setPluginEnabled('@thaliris/dsh-memory-local', true)
@@ -239,7 +290,8 @@ try {
   const apiTemplates = await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'templates', args: {} })
   assert.ok(apiTemplates.some((value: any) => value.id === 'curator'), 'the packed API bundle must register its native Gateway service')
   const apiTools = await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'toolCatalog', args: {} })
-  assert.ok(apiTools.some((value: any) => value.name === 'thaliris_task_start'))
+  assert.ok(Array.isArray(apiTools))
+  assert.ok(!apiTools.some((value: any) => value.name.startsWith('thaliris_')), 'preset-scoped tools never leak into the global Gateway catalog')
   assert.deepEqual(await api.typertGateway.invoke({ peer: ownerPeer, namespace: 'thaliris', method: 'providers', args: {} }), [
     { id: 'thaliris-local', name: 'Local Thaliris memory' },
   ])

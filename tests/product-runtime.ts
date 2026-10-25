@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -38,17 +39,31 @@ const upstream = process.env.DSH_SOURCE!
 const { MockAdapter, textResponse, toolCallResponse } = await import(pathToFileURL(join(upstream, 'packages/core/agent-loop/tests/mock-adapter.ts')).href)
 const corePath = process.env.THALIRIS_CORE_PATH!
 const bridgePath = fileURLToPath(new URL('../core_bridge.py', import.meta.url))
+/** Shipped Core pin, asserted against the provisioned runtime.json in the cold-provision stage. */
+const coreLock = JSON.parse(await readFile(fileURLToPath(new URL('../core.lock.json', import.meta.url)), 'utf8'))
+/** The real preset-scoped child, mounted through a test-only preset declaration. */
+const presetUrl = new URL('../preset.mjs', import.meta.url).href
+const FIXTURE_PRESET = 'thaliris-product-fixture'
 const script: any[] = []
 const signal = () => new AbortController().signal
 const contract = { human_instruction: 'Product runtime fixture', boundary: 'Temporary fixtures only', invariants: 'Native durable identity, optional memory, editable policy', acceptance: 'Controller decides', execution_mode: 'delegated' }
 const role = { id: 'editable', name: 'My role', description: 'Fully editable', enabled: true, prompt: 'EXACT_EDITED_PROMPT', tools: [], modelPolicy: { mode: 'allowed', routes: [{ provider: 'mock', model: 'child' }] }, memory: { read: [], write: [] }, context: { handoff: true, memory: false } }
 const handoff = { goal: 'Fixture', scope: 'Text only', invariants: 'No ambient input', acceptance: 'Controller assesses', context: 'BOUNDED_SELECTION' }
+/** Parameterization for the first-run setup stages; the phase-1 init/restart stages use defaults. */
+interface HarnessOptions {
+  /** `configured` (default) ships the fixture Workspace bindings; `empty` leaves the list empty. */
+  workspaces?: 'configured' | 'empty'
+  /** `configured` (default) uses the test runtime paths; `missing` points at absent paths; `auto` omits them (cold provisioning). */
+  runtime?: 'configured' | 'missing' | 'auto'
+  /** Set false for stages that exercise the host setup service without a model session. */
+  createParent?: boolean
+}
 async function taskStatePath(root: string, taskId: string) {
   const legacy = join(root, '.context', 'state.json')
   try { if (JSON.parse(await readFile(legacy, 'utf8')).task_id === taskId) return legacy } catch { /* the selected task uses its indexed ledger */ }
   return join(root, '.context', 'tasks', taskId, 'state.json')
 }
-async function harness(home: string, initialize: boolean, resumeRoot = true) {
+async function harness(home: string, initialize: boolean, resumeRoot = true, options: HarnessOptions = {}) {
   const dir = join(home, 'profiles', 'product'), workspace = join(home, 'repo'), secondRoot = join(home, 'second')
   if (initialize) {
     await mkdir(workspace); await mkdir(secondRoot)
@@ -75,11 +90,20 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
     ctx.llm.registerAdapter(['mock'], mock)
     Object.assign(ctx.loader.builtins, { editor: ConfigEditor, settings: Settings, thaliris: Plugin })
     if (initialize) {
+      // First-run stages vary only the two host-service inputs: the Workspace binding list and
+      // the runtime paths. Everything else (real Loader/Settings/Gateway/preset child) is the
+      // same host shape the phase-1 suite uses.
+      const runtime = options.runtime ?? 'configured'
+      const runtimeConfig: Record<string, unknown> = { authorityDirectory: join(home, 'authority') }
+      if (runtime === 'configured') { runtimeConfig.pythonExecutable = process.env.THALIRIS_TEST_PYTHON; runtimeConfig.corePath = corePath }
+      else if (runtime === 'missing') { runtimeConfig.pythonExecutable = join(home, 'missing-python.exe'); runtimeConfig.corePath = join(home, 'missing-core') }
+      runtimeConfig.policy = {
+        workspaces: options.workspaces === 'empty' ? [] : [{ workspaceId: first.id, root: workspace, enabled: true }, { workspaceId: second.id, root: secondRoot, enabled: true }],
+        roles: [role],
+      }
       await writeFile(join(dir, 'node_modules', 'fixture-bundle', 'cordis.patch.yml'), JSON.stringify([{ insert: [
         { id: 'editor', name: 'cordis:editor' }, { id: 'settings', name: 'cordis:settings' },
-        { id: 'thaliris', name: 'cordis:thaliris', config: { pythonExecutable: process.env.THALIRIS_TEST_PYTHON, corePath, authorityDirectory: join(home, 'authority'), policy: {
-          workspaces: [{ workspaceId: first.id, root: workspace, enabled: true }, { workspaceId: second.id, root: secondRoot, enabled: true }], roles: [role],
-        } } },
+        { id: 'thaliris', name: 'cordis:thaliris', config: runtimeConfig },
       ] }]))
       patches.push(...readProfilePatches('product', profile as any))
     }
@@ -88,8 +112,32 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
   // Every in-process Gateway call names its Peer; this fixture acts as the local owner.
   const owner = new Peer(ctx.root, { principal: { kind: 'owner' } })
   const invoke = (request: { namespace: string, method: string, args: Record<string, unknown> }) => ctx.typertGateway.invoke({ peer: owner, ...request })
-  const parent = initialize ? await ctx.agentLoop.create(SessionId('persistent-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
-    : resumeRoot ? (await ctx.agents.resume({ resumeSessionId: SessionId('persistent-controller'), agentOptions: { provider: 'mock', model: 'parent' } })).agent : undefined
+  // Split invariants in the real Loader/Registry host: the global row is active, the product
+  // preset is declared through the native roster with its real composition, the native
+  // default stays `standard`, and only the selected fixture preset carries the model-visible
+  // Thaliris surface. This reduced host cannot mount the whole mirrored Standard composition,
+  // so the selected session uses a fixture declaration that mounts the real preset child.
+  assert.ok(ctx.get('thaliris'), 'the global row must provide the thaliris Host service')
+  const registration: any = await (ctx as any).thaliris.preset()
+  assert.equal(registration.status, 'registered', JSON.stringify(registration))
+  const roster = await ctx.agentPresets.list()
+  assert.ok(roster.some((preset: any) => preset.id === 'thaliris' && preset.name === 'Thaliris'), 'the native roster exposes the Thaliris preset')
+  assert.equal(ctx.agentPresets.defaultId, 'standard', 'the plugin never changes the native new-session default')
+  const document = await ctx.agentPresets.readDocument('thaliris')
+  assert.match(document.content, /thaliris-agent/)
+  assert.match(document.content, /@deepseek-ai\/dsh-tool-fs/, 'the declared composition mirrors the Standard native tools')
+  await ctx.agentPresets.register({ id: FIXTURE_PRESET, name: 'Thaliris product fixture', plugins: [{ id: 'thaliris-agent', name: presetUrl }] })
+  const parent = !initialize
+    ? resumeRoot ? (await ctx.agents.resume({ resumeSessionId: SessionId('persistent-controller'), agentOptions: { provider: 'mock', model: 'parent' },
+      setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, FIXTURE_PRESET) } })).agent : undefined
+    : options.createParent === false ? undefined
+      : (await ctx.agents.create({ sessionId: SessionId('persistent-controller'), meta: { cwd: workspace, agentPreset: FIXTURE_PRESET },
+        agentOptions: { provider: 'mock', model: 'parent' }, setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, FIXTURE_PRESET) } })).agent
+  assert.equal(ctx.tools.get('thaliris_task_start'), undefined, 'the global tool view carries no preset-scoped tool')
+  if (parent) {
+    assert.ok(ctx.tools.get('thaliris_task_start', parent), 'the preset-selected session resolves the Controller tools')
+    assert.equal(ctx.tools.schemas(parent).filter(tool => tool.name.startsWith('thaliris_')).length, 20, '16 Controller + 3 memory + dispatch-granted evidence tools are preset-scoped')
+  }
   await ctx.sessionPersistence.flush()
   let call = 0
   // One standalone call through the native batch executor; the single settled result is returned.
@@ -125,13 +173,14 @@ async function initialize(home: string) {
     assert.deepEqual((await h.inspect(orphanTaskId)).state.active_work, [orphanReservation])
     const unbound = await h.ctx.agentLoop.create(SessionId('unbound-controller'), { provider: 'mock', model: 'parent' }, { cwd: h.secondRoot })
     await h.ctx.sessionPersistence.flush()
+    assert.equal(h.ctx.tools.schemas(unbound).filter((tool: any) => tool.name.startsWith('thaliris_')).length, 0, 'an unselected session sees no Thaliris tool')
     const originalWorkspaces = structuredClone(h.view().value.policy.workspaces)
     const staleRoot = join(h.workspace, 'removed-unrelated-workspace')
     await h.edit([{ op: 'set', path: ['policy', 'workspaces'], value: [
       originalWorkspaces[0],
       { workspaceId: 'removed-native-workspace', root: staleRoot, enabled: true },
     ] }])
-    const promptSection = async (agent: any) => (await h.ctx.systemPrompt.assemble({ agent })).sections.find((section: any) => section.name === 'thaliris:controller-contract')?.text ?? ''
+    const promptSection = async (agent: any) => (await h.ctx.systemPrompt.assemble(assembleContextFor(agent, signal()))).sections.find((section: any) => section.name === 'thaliris:controller-contract')?.text ?? ''
     assert.match(await promptSection(h.parent), /Thaliris Controller contract:/, 'a stale unrelated binding does not break the configured root prompt')
     assert.equal(await promptSection(unbound), '', 'an unbound native root receives no Thaliris prompt even with an unrelated stale binding')
     await h.edit([{ op: 'set', path: ['policy', 'workspaces'], value: originalWorkspaces }])
@@ -149,9 +198,10 @@ async function initialize(home: string) {
     const unmount = await client.remote.$mount(remoteContribution)
     const clientTemplates: any = await (client.remote as any).thaliris.templates(); assert.equal(clientTemplates.ok, true, JSON.stringify(clientTemplates)); assert.ok(clientTemplates.value.length)
     const clientTools: any = await (client.remote as any).thaliris.toolCatalog(); assert.equal(clientTools.ok, true)
-    assert.ok(clientTools.value.some((tool: any) => tool.name === 'thaliris_task_start'))
-    assert.deepEqual(Object.keys(clientTools.value[0] ?? {}).sort(), ['description', 'name'])
-    const clientDiagnostics: any = await (client.remote as any).thaliris.diagnostics(h.parent.id, taskId); assert.equal(clientDiagnostics.ok, true); assert.equal(clientDiagnostics.value.task.state.status, 'ACTIVE')
+    // R-NO-INJECT: preset-scoped Thaliris tools never appear in the global Gateway catalog.
+    assert.ok(!clientTools.value.some((tool: any) => tool.name.startsWith('thaliris_')), 'the global tool catalog stays free of preset-scoped tools')
+    for (const tool of clientTools.value) assert.deepEqual(Object.keys(tool).sort(), ['description', 'name'])
+    const clientDiagnostics: any = await (client.remote as any).thaliris.diagnostics(h.parent.id, taskId); assert.equal(clientDiagnostics.ok, true, JSON.stringify(clientDiagnostics)); assert.equal(clientDiagnostics.value.task.state.status, 'ACTIVE')
     await unmount(); await client.fiber.dispose()
     const templates: any = await h.invoke({ namespace: 'thaliris', method: 'templates', args: {} }); assert.ok(templates.some((value: any) => value.id === 'curator'))
     const diagnostics: any = await h.invoke({ namespace: 'thaliris', method: 'diagnostics', args: { sessionId: h.parent.id, taskId } }); assert.equal(diagnostics.task.state.status, 'ACTIVE'); assert.equal(typeof diagnostics.configurationRevision, 'number')
@@ -176,7 +226,8 @@ async function initialize(home: string) {
     const routed: any = await h.execute('thaliris_workstream', { task_id: task.state.task_id, base_revision: task.state.revision, role: role.id, workstream: 'editable', handoff, route: { provider: 'mock', model: 'child' } }); assert.equal(routed.isError, false, JSON.stringify(routed))
     await h.edit([{ op: 'set', path: ['policy', 'roles'], value: [] }])
     // Empty set persists; no hidden regeneration.
-    const second = await h.ctx.agentLoop.create(SessionId('second-controller'), { provider: 'mock', model: 'parent' }, { cwd: h.secondRoot })
+    const second = (await h.ctx.agents.create({ sessionId: SessionId('second-controller'), meta: { cwd: h.secondRoot, agentPreset: FIXTURE_PRESET },
+      agentOptions: { provider: 'mock', model: 'parent' }, setup: async agentCtx => { await h.ctx.agentPresets.mount(agentCtx, FIXTURE_PRESET) } })).agent
     await h.ctx.sessionPersistence.flush()
     const secondStart: any = await h.execute('thaliris_task_start', { goal: 'Isolated second workspace', contract }, second)
     assert.equal(secondStart.isError, false)
@@ -318,14 +369,156 @@ async function restart(home: string) {
     console.log('PASS fresh process/runtime persisted native Workspace + same Session/new Agent Core continuation; rival denial; durable completed reconciliation; close without memory')
   } finally { await h.ctx.fiber.dispose() }
 }
+async function setupReady(home: string) {
+  const h = await harness(home, true, true, { createParent: false })
+  try {
+    const service: any = (h.ctx as any).thaliris
+    // Status is available before any bridge call: derived from the configured paths, then
+    // verified by the explicit human action.
+    const initial: any = service.setupStatus()
+    assert.equal(initial.state, 'ready', JSON.stringify(initial))
+    assert.equal(initial.verified, false, 'a fresh process derives readiness without a probe')
+    assert.equal(initial.manual_override, true)
+    assert.ok(initial.runtime && typeof initial.runtime.pythonExecutable === 'string')
+    // The three path fields are live-editable (volatile) manual overrides in native Settings.
+    const descriptor: any = h.view()
+    assert.equal(descriptor.applies, 'live')
+    const schemaText = JSON.stringify(descriptor.schema)
+    for (const key of ['pythonExecutable', 'corePath', 'authorityDirectory']) assert.ok(schemaText.includes(key), `${key} is an editable volatile settings field`)
+    const first: any = await service.prepareRuntime(signal())
+    assert.equal(first.ok, true, JSON.stringify(first))
+    assert.equal(first.state, 'ready'); assert.equal(first.provisioned, false); assert.equal(first.verified, true)
+    const started = Date.now()
+    const second: any = await service.prepareRuntime(signal())
+    const elapsed = Date.now() - started
+    assert.equal(second.ok, true, JSON.stringify(second))
+    assert.equal(second.already, true); assert.equal(second.provisioned, false)
+    assert.ok(elapsed < 2000, `idempotent setup re-run must be fast (${elapsed}ms)`)
+    const rechecked: any = await service.recheckRuntime(signal())
+    assert.equal(rechecked.state, 'ready'); assert.equal(rechecked.verified, true); assert.equal(rechecked.code, null)
+    // Human Gateway methods return tolerant JSON; the model tool surface never gains them.
+    const gateway: any = await h.invoke({ namespace: 'thaliris', method: 'setupStatus', args: {} })
+    assert.equal(gateway.state, 'ready')
+    const gatewayPrepared: any = await h.invoke({ namespace: 'thaliris', method: 'prepareRuntime', args: {} })
+    assert.equal(gatewayPrepared.ok, true)
+    const gatewayRechecked: any = await h.invoke({ namespace: 'thaliris', method: 'recheckRuntime', args: {} })
+    assert.equal(gatewayRechecked.state, 'ready')
+    for (const name of ['setupStatus', 'prepareRuntime', 'recheckRuntime']) assert.equal(h.ctx.tools.get(name), undefined, `${name} is not a model tool`)
+    console.log('PASS setupStatus/prepareRuntime/recheckRuntime report and verify an already-configured runtime; idle re-run is idempotent; setup stays off the model tool surface')
+  } finally { await h.ctx.fiber.dispose() }
+}
+async function setupAutoBind(home: string) {
+  const h = await harness(home, true, true, { workspaces: 'empty' })
+  try {
+    const service: any = (h.ctx as any).thaliris
+    const workspace = (await h.ctx.workspaceRegistry.resolveByPath(h.workspace))!
+    assert.deepEqual((h.view().value as any).policy.workspaces, [], 'the fixture starts with no Workspace binding')
+    // An unselected native root is never bound, even when the list is empty.
+    const unselected = await h.ctx.agentLoop.create(SessionId('unselected-root'), { provider: 'mock', model: 'parent' }, { cwd: h.secondRoot })
+    await h.ctx.sessionPersistence.flush()
+    await assert.rejects(service.binding(unselected, { autoBind: true }), /THALIRIS_WORKSPACE_NOT_CONFIGURED/)
+    assert.deepEqual((h.view().value as any).policy.workspaces, [], 'no binding is written for an unselected session')
+    // A Thaliris-selected root: the first tool call persists one enabled binding through
+    // the native profile editor and reports it in setupStatus.
+    const started: any = await h.execute('thaliris_task_start', { goal: 'First-run auto-bound workspace', contract })
+    assert.equal(started.isError, false, JSON.stringify(started))
+    const workspaces = (h.view().value as any).policy.workspaces
+    assert.equal(workspaces.length, 1, JSON.stringify(workspaces))
+    assert.equal(workspaces[0].workspaceId, workspace.id)
+    assert.equal(workspaces[0].enabled, true)
+    assert.equal(workspaces[0].root, h.workspace)
+    const reported: any = service.setupStatus().workspaceAutoBind
+    assert.ok(reported && reported.workspaceId === workspace.id, JSON.stringify(reported))
+    // A non-empty list keeps requiring an explicit binding for a second Workspace.
+    const second = (await h.ctx.agents.create({ sessionId: SessionId('second-controller'), meta: { cwd: h.secondRoot, agentPreset: FIXTURE_PRESET },
+      agentOptions: { provider: 'mock', model: 'parent' }, setup: async agentCtx => { await h.ctx.agentPresets.mount(agentCtx, FIXTURE_PRESET) } })).agent
+    await h.ctx.sessionPersistence.flush()
+    const blocked: any = await h.execute('thaliris_task_start', { goal: 'Unbound second workspace', contract }, second)
+    assert.equal(blocked.isError, true)
+    assert.match(JSON.stringify(blocked), /THALIRIS_WORKSPACE_NOT_CONFIGURED/)
+    assert.equal((h.view().value as any).policy.workspaces.length, 1, 'a non-empty list is never appended to')
+    console.log('PASS first-run Workspace auto-binding persists once for a Thaliris-selected root, reports it, and never binds unselected sessions or a non-empty list')
+  } finally { await h.ctx.fiber.dispose() }
+}
+async function setupFailure(home: string) {
+  const h = await harness(home, true, true, { runtime: 'missing' })
+  try {
+    const service: any = (h.ctx as any).thaliris
+    // The plugin loaded with unusable explicit paths; nothing failed at activation.
+    assert.ok(h.ctx.get('thaliris'), 'the plugin loads with unusable runtime paths')
+    const status: any = service.setupStatus()
+    assert.equal(status.state, 'unconfigured')
+    assert.equal(status.code, 'THALIRIS_RUNTIME_NOT_READY')
+    assert.equal(status.verified, false)
+    const prepared: any = await service.prepareRuntime(signal())
+    assert.equal(prepared.ok, false)
+    assert.ok(['THALIRIS_CORE_VERIFY_FAILED', 'THALIRIS_PYTHON_NOT_FOUND', 'THALIRIS_RUNTIME_NOT_READY'].includes(prepared.code), prepared.code)
+    assert.ok(typeof prepared.recovery === 'string' && prepared.recovery.length > 0)
+    assert.ok(!String(prepared.detail ?? '').includes('missing-python'), 'failure detail is redacted')
+    // A Thaliris tool call fails closed with the actionable code; the plugin stays loaded.
+    const called: any = await h.execute('thaliris_task_start', { goal: 'Unusable runtime fixture', contract })
+    assert.equal(called.isError, true)
+    assert.match(JSON.stringify(called), /THALIRIS_CORE_VERIFY_FAILED|THALIRIS_RUNTIME_NOT_READY|THALIRIS_NOT_CONFIGURED/)
+    assert.ok(h.ctx.get('thaliris'), 'the plugin remains loaded after a failed setup')
+    console.log('PASS unusable runtime paths produce an actionable setup code and recovery text, and tool calls fail closed without unloading the plugin')
+  } finally { await h.ctx.fiber.dispose() }
+}
+async function setupCold(home: string) {
+  const h = await harness(home, true, true, { runtime: 'auto' })
+  try {
+    const service: any = (h.ctx as any).thaliris
+    const before: any = service.setupStatus()
+    assert.equal(before.state, 'unconfigured', JSON.stringify(before))
+    assert.equal(before.code, 'THALIRIS_NOT_CONFIGURED')
+    assert.equal(before.manual_override, false)
+    const started = Date.now()
+    const cold: any = await service.prepareRuntime(signal())
+    const coldMs = Date.now() - started
+    assert.equal(cold.ok, true, JSON.stringify(cold))
+    assert.equal(cold.provisioned, true)
+    assert.equal(cold.state, 'ready'); assert.equal(cold.verified, true)
+    assert.equal(cold.runtime.version, '0.5.2')
+    assert.match(String(cold.runtime.pythonExecutable), /runtime-0\.5\.2-py3\.\d+[\\/](?:Scripts[\\/]python\.exe|bin[\\/]python)$/i)
+    assert.match(String(cold.runtime.corePath), /site-packages$/)
+    const manifest = JSON.parse(await readFile(join(home, 'authority', 'runtime.json'), 'utf8'))
+    assert.equal(manifest.core.version, '0.5.2')
+    assert.equal(manifest.core.state_schema_version, 7)
+    assert.equal(manifest.core.source.sha256, coreLock.source.sha256)
+    assert.equal(manifest.core.source.package_tree_sha256, coreLock.package_tree_sha256)
+    // No pip or global build tooling was installed into the runtime.
+    const scripts = dirname(cold.runtime.pythonExecutable)
+    assert.equal(existsSync(join(scripts, 'pip.exe')), false, 'the venv has no pip')
+    assert.equal(existsSync(join(cold.runtime.corePath, 'pip')), false, 'the runtime has no pip package')
+    // The bridge now runs through the provisioned interpreter and Core path.
+    const task: any = await h.execute('thaliris_task_start', { goal: 'Cold-provisioned runtime fixture', contract })
+    assert.equal(task.isError, false, JSON.stringify(task))
+    const warmStarted = Date.now()
+    const again: any = await service.prepareRuntime(signal())
+    const warmMs = Date.now() - warmStarted
+    assert.equal(again.ok, true); assert.equal(again.already, true); assert.equal(again.provisioned, false)
+    assert.ok(warmMs < 2000, `idempotent re-run after cold provisioning must be fast (${warmMs}ms)`)
+    const status: any = service.setupStatus()
+    assert.equal(status.state, 'ready'); assert.equal(status.verified, true)
+    console.log(`PASS cold provisioning from the shipped Python (${coldMs} ms; no pip/global tools), runtime.json correct, bridge usable, re-run idempotent (${warmMs} ms)`)
+  } finally { await h.ctx.fiber.dispose() }
+}
 const phase = process.argv[2], home = process.argv[3]
 if (phase === 'init') await initialize(home!)
 else if (phase === 'restart') await restart(home!)
+else if (phase === 'setup') await setupReady(home!)
+else if (phase === 'autobind') await setupAutoBind(home!)
+else if (phase === 'failure') await setupFailure(home!)
+else if (phase === 'cold') await setupCold(home!)
 else {
   const directory = await mkdtemp(join(tmpdir(), 'thaliris-product-'))
   try {
-    for (const stage of ['init', 'restart']) {
-      const child = spawnSync(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), stage, directory], { stdio: 'inherit', env: process.env, timeout: 120000 })
+    const stages = ['init', 'restart', 'setup', 'autobind', 'failure']
+    if (process.env.THALIRIS_TEST_COLD_PROVISION === '1') stages.push('cold')
+    for (const stage of stages) {
+      const stageHome = stage === 'init' || stage === 'restart' ? directory : join(directory, stage)
+      if (stageHome !== directory) await mkdir(stageHome, { recursive: true })
+      const env = stage === 'cold' ? { ...process.env, THALIRIS_PYTHON: process.env.THALIRIS_TEST_PYTHON } : process.env
+      const child = spawnSync(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), stage, stageHome], { stdio: 'inherit', env, timeout: 240000 })
       assert.equal(child.status, 0, `${stage}: ${child.error ?? ''}`)
     }
   } finally { await rm(directory, { recursive: true, force: true }) }

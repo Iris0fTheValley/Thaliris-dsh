@@ -19,7 +19,13 @@ export const roleSchema = z.object({
   context: z.object({ handoff: z.boolean().default(true), memory: z.boolean().default(false) }).default({ handoff: true, memory: false }),
 })
 export const Config = z.object({
-  pythonExecutable: z.string().required(), corePath: z.string().required(), authorityDirectory: z.string().required(),
+  // Runtime paths stay optional and keep their historical names/positions so existing
+  // profile rows load unchanged and a fresh install never fails: activation validates
+  // nothing, use-time resolution (index.mjs/setup.mjs) reads explicit config first, then
+  // the recorded runtime manifest, then host-detected defaults, and fails closed with
+  // THALIRIS_NOT_CONFIGURED / THALIRIS_RUNTIME_NOT_READY plus recovery text. The three
+  // fields are volatile settings fields so the human can edit a manual override live.
+  pythonExecutable: z.string().volatile(), corePath: z.string().volatile(), authorityDirectory: z.string().volatile(),
   subagentProvider: z.string().default('spawn'), bridgeTimeoutMs: z.number().min(1).max(300000).default(30000),
   policy: z.object({
     controllerPrompt: z.string().default(controllerTemplate),
@@ -45,4 +51,21 @@ export function selectedRole(policy, id) {
   if (!role.id.trim() || role.tools.some(tool => tool.startsWith('thaliris_task_') || tool === 'thaliris_workstream' || tool === 'thaliris_reconcile' || tool === 'thaliris_observe')) throw new Error('THALIRIS_INVALID_ROLE_POLICY')
   if (role.modelPolicy.mode === 'fixed' && role.modelPolicy.routes.length !== 1) throw new Error('THALIRIS_FIXED_ROUTE_REQUIRED')
   return role
+}
+
+/**
+ * Split editable role grants into host-resolvable names and unknown names.
+ *
+ * A stored role may name a tool a narrower host does not provide (older/newer DSH, a
+ * disabled row). The dispatch applies the known grants only and reports the rest, so a
+ * stale name can never break child creation; the user's stored row is not rewritten.
+ * @param tools - stored `role.tools` names.
+ * @param catalog - names the host resolves for the dispatching agent scope.
+ * @returns the applicable grants and the ignored names, both in stored order.
+ */
+export function nativeToolGrants(tools, catalog) {
+  const known = catalog instanceof Set ? catalog : new Set(catalog)
+  const granted = [], unknown = []
+  for (const name of tools) (known.has(name) ? granted : unknown).push(name)
+  return { granted, unknown }
 }

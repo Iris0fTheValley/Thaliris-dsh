@@ -1,6 +1,34 @@
 // Native defaults are editable user-owned records; existing stored roles are not overwritten.
+//
+// A child that receives `tools: []` is limited to `thaliris_observe` and cannot read the
+// repository at all. The templates therefore grant curated, version-stable native DSH tool
+// names per role capability (design §4). Names the host does not provide are filtered out at
+// dispatch with a diagnostic, so a narrower host cannot break a child. The plugin never
+// rewrites stored user roles: the Settings page offers an explicit Apply action instead.
 const shared = "Use only the selected handoff; preserve its hard invariants and decided boundaries. Return a decision-changing unknown to Controller in FINAL if evidence changes direction, architecture, contract, scope or acceptance. Keep raw working context private; return distilled conclusion, findings, unknowns, contradictions, verification and optional Artifact refs. When an already discovered local fact changes your conclusion, local acceptance or a critical UNKNOWN and thaliris_observe is available, record it with source refs; the adapter binds task, handoff, candidate and requirement refs, so do not supply or reconstruct them. Without that tool, return the observation and its sources in FINAL. This adds no search obligation; do not reconstruct global requirements or judge their satisfaction, and treat historical observations as history, not current truth. "
 const executor = "Before first mutation establish acceptance-relevant current surfaces, authoritative/derived relationships and working verification. Reuse established inventory. Observe enough, make a coherent semantic mutation, verify acceptance-relevant behavior and repair from new evidence. Keep coupled work together; use the smallest tests for independent semantic slices. Change authoritative source and generate/sync derived outputs. Refresh a bounded stale region before reconstructing a failed edit; change unsuitable methods. Recover cwd/quoting/known-environment errors mechanically. Use no retry/tool/token/time thresholds. Return authority ambiguity affecting compatibility, ownership, security, lifecycle or contract to Controller; many failures, many files or long regression alone do not require escalation. Project/package install-smoke closure excludes effective live Host maintenance, which needs separate authority. Return criterion-linked verification, evidence limits and UNKNOWN to Controller. The Controller judges product completion against the original objective and acceptance criteria using available evidence, routes unmet criteria or decision-changing unknowns as needed, and records mechanical closure when ready. A test PASS, Reviewer READY or native Completed is evidence about its own surface, not product completion. "
+
+/** Read-only investigation: repository reads plus the web, no mutation tools. */
+const investigation = ['read', 'glob', 'grep', 'bash', 'pwsh', 'job_list', 'job_output', 'web_fetch', 'web_search', 'todo_write', 'skill']
+/** Full execution: repository mutation, shell, background jobs, persistent terminals, deliverables. */
+const execution = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh', 'job_list', 'job_output', 'job_kill',
+  'terminal_list', 'terminal_open', 'terminal_read', 'terminal_send', 'terminal_signal', 'terminal_close',
+  'web_fetch', 'web_search', 'todo_write', 'skill', 'present']
+/** Non-writing review: evidence gathering only; no shell, so a review cannot mutate the tree. */
+const reasoning = ['read', 'glob', 'grep', 'web_fetch', 'web_search']
+/** Knowledge curating: edits reusable documentation, no shell and no delegation. */
+const curation = ['read', 'write', 'edit', 'glob', 'grep', 'todo_write', 'skill']
+
+/** Curated native DSH tool grants per seeded role template (design §4). */
+export const roleNativeTools = Object.freeze({
+  investigator: Object.freeze(investigation),
+  implementer: Object.freeze(execution),
+  'focused-implementer': Object.freeze(execution),
+  reviewer: Object.freeze(reasoning),
+  curator: Object.freeze(curation),
+  'reasoning-specialist': Object.freeze(reasoning),
+})
+
 export const roleTemplates = [
   ["investigator", "Investigator", "Gather and verify broad facts within selected scope; architecture decisions stay with Controller. Batch related reads/searches and stop at sufficient evidence. Return exact locations, affected surfaces and covered/uncovered scope; do not delegate."],
   ["implementer", "Implementer", executor + "Implement stable accepted direction through deterministic convergence and assigned tests, fixes, generated/documentation sync and Git closure. Stop when selected local acceptance is met and report candidate state, verification and limits; methods belong to you. A local test PASS alone does not end an unfinished assignment."],
@@ -9,4 +37,5 @@ export const roleTemplates = [
   ["curator", "Curator", "Reconcile only selected reusable knowledge, supplied prior memory/navigation and canonical sources. Preserve provenance; update relevant semantic navigation when needed. Propose memory changes under configured user policy. Do not change memory policy or task authority, scan unselected corpus, or delegate."],
   ["reasoning-specialist", "Reasoning Specialist", "When selected, independently challenge the selected framing and decision basis when that could change direction: hidden assumptions, causal model, decomposition, boundaries, premature convergence and material alternatives. Distinguish evidence from inference; report the strongest material challenge, direction-changing alternatives and critical missing facts for Controller routing. Remain non-writing. Do not delegate, gather broad facts, implement, conduct routine review, solve an ordinary hard problem for its own sake, or make the final task decision."],
 ].map(([id, name, prompt]) => ({ id, name, description: `${name} initial template`, prompt: shared + prompt, enabled: true,
-  tools: [], modelPolicy: { mode: 'inherit', routes: [] }, memory: { read: [], write: [] }, context: { handoff: true, memory: false } }))
+  // Curated native grants; an unknown name is filtered against the host catalog at dispatch.
+  tools: [...roleNativeTools[id]], modelPolicy: { mode: 'inherit', routes: [] }, memory: { read: [], write: [] }, context: { handoff: true, memory: false } }))

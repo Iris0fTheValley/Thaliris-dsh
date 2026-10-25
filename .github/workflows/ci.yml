@@ -69,6 +69,15 @@ jobs:
           node-version: '24'
       - name: Prompt contracts
         run: node tests/prompt-contract.mjs
+      # Keyless: these modules must parse without a DSH checkout. The contract
+      # assertions for the package exports, the preset declaration and the
+      # committed composition mirror already live in prompt-contract.mjs.
+      - name: Preset, package and setup modules parse
+        if: ${{ !cancelled() }}
+        run: >-
+          node --check index.mjs preset.mjs composition.mjs setup.mjs
+          build-composition.mjs build-bundle.mjs policy.mjs role-templates.mjs
+          tests/composition-drift.mjs
       - name: Generated bundle drift
         if: ${{ !cancelled() }}
         run: |
@@ -124,6 +133,25 @@ jobs:
       - name: Build DSH host system addon
         working-directory: dsh-src
         run: pnpm build:native-system
+      # The programmatic Agent Preset must carry DSH's Standard composition;
+      # this gate fails loudly when the host preset changed without a regenerated
+      # composition.mjs (run per verified tag, so rc.2 and rc.3 are both checked).
+      - name: Composition mirror drift gate
+        working-directory: adapter
+        run: node tests/composition-drift.mjs
+        env:
+          DSH_SOURCE: ${{ github.workspace }}/dsh-src
+      # The committed mirror records the rc.3 provenance line; regenerating from
+      # that tag must be byte-identical. Older/admitted tags are covered by the
+      # row-level drift gate above instead.
+      - name: Composition mirror regeneration is committed
+        if: ${{ !cancelled() && matrix.dsh-tag == 'dsh-v0.2.1-rc.3' }}
+        working-directory: adapter
+        run: |
+          node build-composition.mjs
+          git diff --exit-code composition.mjs
+        env:
+          DSH_SOURCE: ${{ github.workspace }}/dsh-src
       - name: Native composition (scripted model)
         working-directory: adapter
         run: npm run test:native

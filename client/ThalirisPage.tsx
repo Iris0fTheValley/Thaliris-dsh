@@ -2,10 +2,17 @@ import { useId, useMemo, useState } from 'react'
 import type { PropsLocale, PropsRuntime, InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { RoleRecord, UserPolicy } from '../remote'
-import type { PolicyEditorController } from './policy-controller.ts'
+import type { PolicyEditorController, RuntimeDraft, RuntimeField } from './policy-controller.ts'
+import { RUNTIME_FIELDS, roleRecommendations } from './policy-controller.ts'
 import type { NativeProjectionController, NativeProjectionState } from './native-controller.ts'
-import { Button, Checkbox, Input, SegmentedTabs, SettingsForm, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { SegmentedTab } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SetupController, SetupControllerState } from './setup-controller.ts'
+import type { ModeController, ModeControllerState } from './mode-controller.ts'
+import {
+  canRestoreNativeDefault, canSetThalirisDefault, danglingDefault, effectiveDefaultId, isThalirisDefault,
+  restoreNeeded, thalirisHealthy, thalirisRow,
+} from './mode-controller.ts'
+import { Button, Checkbox, Input, SegmentedTabs, SettingsForm, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SegmentedTab, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SettingsFormShell } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, type LocaleKey } from './locales.ts'
 import css from './ThalirisPage.module.css'
@@ -14,8 +21,11 @@ export interface ThalirisPageFace {
   hooks: {
     policy: PolicyEditorController['store']
     native: NativeProjectionController['store']
+    setup: SetupController['store']
+    mode: ModeController['store']
   }
   edit: PolicyEditorController['edit']
+  editRuntime: (field: RuntimeField, value: string) => void
   save: () => void
   discard: () => void
   refresh: () => void
@@ -23,6 +33,12 @@ export interface ThalirisPageFace {
   openPlugin: (packageName: string) => void
   openSession: (sessionId: string) => void
   approveMemory: (sessionId: string, taskId: string, proposalId: string) => void
+  loadSetup: () => void
+  prepareRuntime: () => void
+  recheckRuntime: () => void
+  setThalirisDefault: () => void
+  restoreNativeDefault: () => void
+  applyRecommended: (templates: readonly RoleRecord[]) => void
 }
 
 type Props = PropsRuntime<'plugins.item'> & PropsLocale<typeof NS> & InjectFace<ThalirisPageFace>
@@ -72,10 +88,87 @@ function duplicateRole(role: RoleRecord, roles: readonly RoleRecord[]): RoleReco
   return { ...structuredClone(role), id }
 }
 
+const SETUP_STATE_KEYS: Readonly<Record<string, LocaleKey>> = {
+  unconfigured: 'stateUnconfigured', detecting: 'stateDetecting', provisioning: 'stateProvisioning',
+  verifying: 'stateVerifying', ready: 'stateReady', failed: 'stateFailed',
+}
+
+function setupStateLabel(state: string, t: (key: LocaleKey) => string): string {
+  const key = SETUP_STATE_KEYS[state]
+  return key === undefined ? t('stateUnknown') : t(key)
+}
+
+function setupStateTone(state: string): TagTone {
+  if (state === 'ready') return 'success'
+  if (state === 'failed') return 'danger'
+  if (state === 'detecting' || state === 'provisioning' || state === 'verifying') return 'warning'
+  return 'outline'
+}
+
+const SETUP_STEP_KEYS: Readonly<Record<string, LocaleKey>> = {
+  'detect-python': 'setupStepDetectPython', 'fetch-source': 'setupStepFetchSource',
+  'create-runtime': 'setupStepCreateRuntime', 'install-core': 'setupStepInstallCore',
+  'verify-core': 'setupStepVerifyCore', 'write-manifest': 'setupStepWriteManifest',
+  'verify-recorded': 'setupStepVerifyRecorded', 'verify-configured': 'setupStepVerifyConfigured',
+  ready: 'setupStepReady',
+}
+
+function setupStepLabel(step: string | null | undefined, t: (key: LocaleKey) => string): string | undefined {
+  if (!step) return undefined
+  const key = SETUP_STEP_KEYS[step]
+  return key === undefined ? step : t(key)
+}
+
+const SETUP_SOURCE_KEYS: Readonly<Record<string, LocaleKey>> = {
+  provisioned: 'sourceProvisioned', recorded: 'sourceRecorded', configuration: 'sourceConfiguration', detected: 'sourceDetected',
+}
+
+function setupSourceLabel(source: string | null | undefined, t: (key: LocaleKey) => string): string | undefined {
+  if (!source) return undefined
+  const key = SETUP_SOURCE_KEYS[source]
+  return key === undefined ? source : t(key)
+}
+
+function runtimeFieldLabel(field: RuntimeField, t: (key: LocaleKey) => string): string {
+  return field === 'pythonExecutable' ? t('setupPythonOverride')
+    : field === 'corePath' ? t('setupCoreOverride') : t('setupAuthorityOverride')
+}
+
+/**
+ * The Settings page is root-scoped and owns no Session selection, so the explicit
+ * "most recent Workspace" action uses the same native rule DSH applies when a flow
+ * opens a Workspace without naming one: latest Session activity, then creation time.
+ */
+function recentWorkspaceId(
+  workspaces: readonly { workspaceId: string; sessionIds: readonly string[]; createdAt: string }[],
+  sessions: Readonly<Record<string, { updatedAt?: number } | undefined>>,
+): string | undefined {
+  let selected: string | undefined
+  let selectedTime = Number.NEGATIVE_INFINITY
+  for (const workspace of workspaces) {
+    let latest = Number.NEGATIVE_INFINITY
+    for (const sessionId of workspace.sessionIds) {
+      const updatedAt = sessions[sessionId]?.updatedAt
+      if (typeof updatedAt === 'number' && Number.isFinite(updatedAt)) latest = Math.max(latest, updatedAt)
+    }
+    if (latest === Number.NEGATIVE_INFINITY) {
+      const created = Date.parse(workspace.createdAt)
+      if (Number.isFinite(created)) latest = created
+    }
+    if (selected === undefined || latest > selectedTime) {
+      selected = workspace.workspaceId
+      selectedTime = latest
+    }
+  }
+  return selected
+}
+
 export function ThalirisPage(props: Props) {
   const { t } = props
   const policy = props.usePolicy(state => state)
   const native = props.useNative(state => state)
+  const setup = props.useSetup(state => state)
+  const mode = props.useMode(state => state)
   const [tab, setTab] = useState<Tab>('general')
   const [templateId, setTemplateId] = useState('')
   const [workspaceId, setWorkspaceId] = useState('')
@@ -88,7 +181,7 @@ export function ThalirisPage(props: Props) {
     available: policy.available,
     writable: policy.writable,
     dirty: policy.dirty && policy.writable,
-    invalid: Boolean(policy.validationError) || policy.conflict,
+    invalid: Boolean(policy.validationError) || policy.conflict || policy.runtimeInvalid.length > 0,
     saving: policy.saving,
     failed: Boolean(policy.error),
   }
@@ -104,6 +197,10 @@ export function ThalirisPage(props: Props) {
   const editMemory = (patch: Partial<UserPolicy['memory']>): void => {
     if (draft) edit('memory', { ...draft.memory, ...patch })
   }
+  const autoBind = setup.setup?.workspaceAutoBind ?? undefined
+  const recentId = recentWorkspaceId(native.workspaces.items,
+    native.sessions.byId as unknown as Readonly<Record<string, { updatedAt?: number } | undefined>>)
+  const recentWorkspace = native.workspaces.items.find(row => row.workspaceId === recentId)
 
   if (props.view === 'summary') return t('summary')
   return (
@@ -129,14 +226,22 @@ export function ThalirisPage(props: Props) {
         {policy.available && (!policy.writable || policy.conflict) ? <Button onClick={props.discard}>{t('discard')}</Button> : null}
         <fieldset className={css.fieldset} disabled={!policy.writable}>
         <legend className={css.visuallyHidden}>{t('settingsLabel')}</legend>
-        {tab === 'general' && draft ? (
+        {tab === 'general' && draft ? <>
+          <SetupSection setup={setup} runtime={policy.runtime} runtimeInvalid={policy.runtimeInvalid}
+            writable={policy.writable} editRuntime={props.editRuntime} t={tfn}
+            onPrepare={props.prepareRuntime} onRecheck={props.recheckRuntime} onRefresh={props.loadSetup} />
+          <ModeSection mode={mode} t={tfn}
+            onSet={props.setThalirisDefault} onRestore={props.restoreNativeDefault} />
+          <RecommendedPermissions draft={draft} native={native} t={tfn}
+            disabled={!policy.writable || policy.saving} onApply={props.applyRecommended}
+            onLoadTemplates={props.refresh} />
           <section className={css.section}>
             <h3>{t('generalTitle')}</h3><p>{t('generalHelp')}</p>
             <label className={css.field}><span>{t('controllerPrompt')}</span>
               <textarea value={draft.controllerPrompt} onChange={event => edit('controllerPrompt', event.currentTarget.value)} />
             </label>
           </section>
-        ) : null}
+        </> : null}
 
         {tab === 'roles' && draft ? (
           <section className={css.section}>
@@ -290,8 +395,10 @@ export function ThalirisPage(props: Props) {
             {!native.workspaces.items.length && native.workspaces.phase === 'ready' ? <p>{t('noWorkspaces')}</p> : null}
             <div className={css.stack}>{draft.workspaces.map((binding, index) => {
               const workspace = native.workspaces.items.find(row => row.workspaceId === binding.workspaceId)
+              const autoBoundHere = autoBind?.workspaceId === binding.workspaceId
               return <div className={css.card} key={binding.workspaceId}>
                 <div className={css.cardHead}><div><strong>{workspace?.title ?? binding.workspaceId}</strong><code>{binding.root}</code>
+                  {autoBoundHere ? <p className={css.notice}>{t('workspaceAutoBound')}{autoBind?.at ? ` — ${t('workspaceAutoBindAt')}: ${autoBind.at}` : ''}</p> : null}
                   {!workspace ? <p className={css.notice}>{t('workspaceMissing')}</p> : null}</div>
                   <Switch checked={binding.enabled} label={`${t('workspaceEnabled')}: ${binding.workspaceId}`} onChange={enabled => {
                     const workspaces = [...draft.workspaces]; workspaces[index] = { ...binding, enabled }; edit('workspaces', workspaces)
@@ -299,6 +406,24 @@ export function ThalirisPage(props: Props) {
                 </div><Button onClick={() => edit('workspaces', draft.workspaces.filter((_, i) => i !== index))}>{t('removeWorkspace')}</Button>
               </div>
             })}</div>
+            <p><small>{t('workspaceExplicitOnly')}</small></p>
+            <div className={css.inline}>
+              <Button disabled={!recentWorkspace || draft.workspaces.some(row => row.workspaceId === recentWorkspace.workspaceId)}
+                onClick={() => {
+                  if (recentWorkspace) edit('workspaces', [...draft.workspaces, { workspaceId: recentWorkspace.workspaceId, root: recentWorkspace.path, enabled: true }])
+                }}>{t('workspaceBindRecent')}</Button>
+              {recentWorkspace
+                ? <span>{recentWorkspace.title} — {recentWorkspace.path}</span>
+                : <span>{t('workspaceRecentMissing')}</span>}
+            </div>
+            <p><small>{t('workspaceBindRecentHint')}</small></p>
+            {autoBind ? <div className={css.card}>
+              <div className={css.cardHead}><div><strong>{t('workspaceAutoBoundTitle')}</strong><code>{autoBind.root}</code></div>
+                <Tag tone="info">{t('workspaceAutoBound')}</Tag></div>
+              {autoBind.at ? <p>{t('workspaceAutoBindAt')}: {autoBind.at}</p> : null}
+              {draft.workspaces.some(row => row.workspaceId === autoBind.workspaceId) ? null : <p className={css.notice}>{t('workspaceAutoBindStale')}</p>}
+            </div> : null}
+            <p><small>{t('workspaceAutoBindHelp')}</small></p>
             <h3>{t('roleHandoff')}</h3>
             {draft.roles.map((role, index) => <div className={css.permissionRow} key={role.id || index}>
               <strong>{role.name || role.id || `Role ${index + 1}`}</strong>
@@ -484,4 +609,176 @@ function Diagnostics({ native, selectedSession, setSelectedSession, selectedTask
 
 function InfoCard({ title, value }: { title: string; value: unknown }) {
   return <article className={css.card}><strong>{title}</strong><pre>{json(value)}</pre></article>
+}
+
+function SetupSection({ setup, runtime, runtimeInvalid, writable, editRuntime, t, onPrepare, onRecheck, onRefresh }: {
+  setup: SetupControllerState; runtime: RuntimeDraft | undefined; runtimeInvalid: readonly RuntimeField[]
+  writable: boolean; editRuntime: (field: RuntimeField, value: string) => void
+  t: (key: LocaleKey) => string; onPrepare: () => void; onRecheck: () => void; onRefresh: () => void
+}) {
+  const data = setup.setup
+  const runtimeInfo = data?.runtime
+  const pin = data?.pin
+  const busy = setup.action !== 'idle'
+  const progress = data?.progress
+  const progressStep = setupStepLabel(progress?.step, t)
+  const prepareLabel = data?.state === 'failed' ? t('setupRetry')
+    : data?.state === 'ready' ? t('setupPrepareAgain') : t('setupPrepare')
+  const source = setupSourceLabel(runtimeInfo?.source, t)
+  const pinLabel = pin?.version
+    ? `${pin.version}${pin.commit ? ` @ ${pin.commit.slice(0, 12)}` : ''}`
+    : pin?.error ? t('setupPinError') : undefined
+  return <section className={css.section}>
+    <div className={css.sectionHead}>
+      <div><h3>{t('setupTitle')}</h3><p>{t('setupHelp')}</p></div>
+      <div className={css.inlineActions}>
+        <Button variant="primary" disabled={busy} onClick={onPrepare}>
+          {busy && setup.action === 'preparing' ? t('setupPreparing') : prepareLabel}
+        </Button>
+        <Button disabled={busy} onClick={onRecheck}>
+          {busy && setup.action === 'rechecking' ? t('setupRechecking') : t('setupRecheck')}
+        </Button>
+        <Button disabled={busy} onClick={onRefresh}>{t('setupRefresh')}</Button>
+      </div>
+    </div>
+    <p>{t('setupFirstUse')}</p>
+    {data ? <div className={css.inline}>
+      <Tag tone={setupStateTone(data.state)}>{setupStateLabel(data.state, t)}</Tag>
+      <Tag tone={data.verified ? 'success' : 'neutral'}>{data.verified ? t('setupVerified') : t('setupUnverified')}</Tag>
+      {data.manual_override ? <Tag tone="info">{t('setupManualOverride')}</Tag> : null}
+    </div> : null}
+    {busy ? <p className={css.notice} role="status">
+      {setup.action === 'preparing' ? t('setupPreparing') : t('setupRechecking')}
+      {progressStep ? ` — ${progressStep}` : ''}
+      {typeof progress?.elapsed_ms === 'number' ? ` (${Math.round(progress.elapsed_ms / 1000)}s)` : ''}
+    </p> : null}
+    {setup.actionError ? <p className={css.error} role="alert">{t('setupActionFailed')}: {setup.actionError}</p> : null}
+    {setup.status === 'error'
+      ? <p className={css.error} role="alert">{setup.error ? `${t('setupUnavailable')} ${setup.error}` : t('setupUnavailable')}</p>
+      : null}
+    {setup.status === 'loading' && !data ? <p>{t('setupStatusLoading')}</p> : null}
+    {data ? <dl className={css.keyValues}>
+      <dt>{t('setupAuthority')}</dt><dd>{data.authorityDirectory ?? t('setupNotConfigured')}</dd>
+      <dt>{t('setupPython')}</dt><dd>{runtimeInfo?.pythonExecutable ?? t('setupNotConfigured')}</dd>
+      <dt>{t('setupPythonVersion')}</dt><dd>{runtimeInfo?.python ?? '—'}</dd>
+      <dt>{t('setupCoreVersion')}</dt><dd>{runtimeInfo?.version ?? '—'}</dd>
+      <dt>{t('setupCorePath')}</dt><dd>{runtimeInfo?.corePath ?? '—'}</dd>
+      <dt>{t('setupSource')}</dt><dd>{source ?? '—'}</dd>
+      <dt>{t('setupVerifiedAt')}</dt><dd>{runtimeInfo?.verified_at ?? '—'}</dd>
+      <dt>{t('setupPin')}</dt><dd>{pinLabel ?? '—'}</dd>
+    </dl> : null}
+    {data && data.state === 'failed' ? <div className={css.card}>
+      <strong>{t('setupErrorLabel')}</strong>
+      {data.code ? <p>{t('setupCodeLabel')}: <code>{data.code}</code></p> : null}
+      {data.recovery ? <p>{t('setupRecoveryLabel')}: {data.recovery}</p> : null}
+      {data.detail ? <p>{t('setupDetailLabel')}: {data.detail}</p> : null}
+    </div> : null}
+    <h4>{t('setupOverridesTitle')}</h4>
+    <p>{t('setupOverridesHelp')}</p>
+    <div className={css.grid}>
+      {RUNTIME_FIELDS.map(field => <label className={css.field} key={field}>
+        <span>{runtimeFieldLabel(field, t)}</span>
+        <Input aria-label={runtimeFieldLabel(field, t)} value={runtime?.[field] ?? ''} disabled={!writable}
+          aria-invalid={runtimeInvalid.includes(field) ? true : undefined}
+          onChange={event => editRuntime(field, event.currentTarget.value)} />
+        {runtimeInvalid.includes(field) ? <small className={css.error}>{t('setupInvalidLocation')}</small> : null}
+      </label>)}
+    </div>
+    <p><small>{t('setupOverridesSaveHint')}</small></p>
+  </section>
+}
+
+function ModeSection({ mode, t, onSet, onRestore }: {
+  mode: ModeControllerState; t: (key: LocaleKey) => string; onSet: () => void; onRestore: () => void
+}) {
+  const row = thalirisRow(mode)
+  const healthy = thalirisHealthy(mode)
+  const isDefault = isThalirisDefault(mode)
+  const dangling = danglingDefault(mode)
+  const effective = effectiveDefaultId(mode)
+  return <section className={css.section}>
+    <h3>{t('modeTitle')}</h3><p>{t('modeHelp')}</p>
+    {mode.status === 'loading' ? <p>{t('modeRosterLoading')}</p> : null}
+    {mode.status === 'unavailable' ? <p className={css.notice}>{t('modeRegistryUnavailable')}</p> : null}
+    {mode.status === 'error'
+      ? <p className={css.error} role="alert">{t('modeRegistryError')}{mode.error ? `: ${mode.error}` : ''}</p>
+      : null}
+    {mode.status === 'ready' ? <>
+      <div className={css.inline}>
+        <span>{t('modePresetHealth')}:</span>
+        <Tag tone={row ? (healthy ? 'success' : 'danger') : 'outline'}>
+          {row ? (healthy ? t('modeHealthy') : t('modeBroken')) : t('modeMissing')}
+        </Tag>
+        <span>{t('modeDefaultLabel')}:</span>
+        <Tag tone={dangling ? 'danger' : isDefault ? 'warning' : 'neutral'}>
+          {dangling ? t('modeNoDefault') : isDefault ? t('modeIsDefault') : t('modeIsOtherDefault')}
+        </Tag>
+      </div>
+      {row?.broken ? <p className={css.error}>{t('modeBrokenDetail')} <code>{row.broken}</code></p> : null}
+      {mode.registryAvailable ? null : <p className={css.notice}>{t('modeSettingsUnavailable')}</p>}
+      {mode.presets.length === 0 ? <p>{t('modeRosterEmpty')}</p> : null}
+      <dl className={css.keyValues}>
+        <dt>{t('modeNativeDefault')}</dt><dd>{mode.nativeDefault ?? '—'}</dd>
+        <dt>{t('modeSelectedDefault')}</dt><dd>{mode.selectedDefault ?? '—'}</dd>
+        <dt>{t('modeDefaultLabel')}</dt><dd>{effective ?? '—'}</dd>
+      </dl>
+      {dangling ? <p className={css.error} role="alert">{t('modeDanglingResolve')}</p> : null}
+      {isDefault ? <p className={css.notice}>{t('modeDanglingWarning')}</p> : null}
+      <div className={css.inlineActions}>
+        <Button variant="primary" disabled={!canSetThalirisDefault(mode)} onClick={onSet}>
+          {t('modeSetDefault')}
+        </Button>
+        {restoreNeeded(mode)
+          ? <Button disabled={!canRestoreNativeDefault(mode)} onClick={onRestore}>{t('modeRestoreDefault')}</Button>
+          : null}
+      </div>
+      {mode.saving ? <p className={css.notice} role="status">{t('modeSavingDefault')}</p> : null}
+      {mode.saveError ? <p className={css.error} role="alert">{t('modeWriteFailed')}: {mode.saveError}</p> : null}
+      <p><small>{t('modeNoAutoWrite')}</small></p>
+    </> : null}
+  </section>
+}
+
+function RecommendedPermissions({ draft, native, t, disabled, onApply, onLoadTemplates }: {
+  draft: UserPolicy; native: NativeProjectionState; t: (key: LocaleKey) => string
+  disabled: boolean; onApply: (templates: readonly RoleRecord[]) => void; onLoadTemplates: () => void
+}) {
+  const templates = native.templates as RoleRecord[]
+  const recommendations = roleRecommendations(draft.roles, templates)
+  const catalog = new Set(native.tools.map(tool => tool.name))
+  const applicable = recommendations.some(recommendation => recommendation.tools.length > 0)
+  return <section className={css.section}>
+    <h3>{t('recommendedTitle')}</h3><p>{t('recommendedHelp')}</p>
+    {native.templateStatus !== 'ready' && recommendations.length > 0 ? <div className={css.inline}>
+      <p>{t('templateUnavailable')}</p>
+      <Button onClick={onLoadTemplates}>{t('loadTemplates')}</Button>
+    </div> : null}
+    {recommendations.length === 0 ? <p>{t('recommendedNone')}</p> : <div className={css.stack}>
+      {recommendations.map(recommendation => <article className={css.card} key={recommendation.role.id || recommendation.index}>
+        <div className={css.cardHead}>
+          <div><strong>{recommendation.role.name || recommendation.role.id}</strong><code>{recommendation.role.id}</code></div>
+          <Tag tone={recommendation.tools.length > 0 ? 'warning' : 'outline'}>
+            {t('recommendedCurrent')}: {recommendation.role.tools.length}
+          </Tag>
+        </div>
+        {recommendation.template ? <div className={css.subsection}>
+          <h4>{t('recommendedTools')}</h4>
+          <div className={css.checkGrid}>{recommendation.tools.map(name => <div className={css.stack} key={name}>
+            <code>{name}</code>
+            <small>{native.toolStatus === 'ready'
+              ? (catalog.has(name) ? t('recommendedInCatalog') : t('recommendedNotInCatalog'))
+              : t('recommendedCatalogMissing')}</small>
+          </div>)}</div>
+        </div> : native.templateStatus === 'ready'
+          ? <p className={css.notice}>{t('recommendedNoTemplate')}</p>
+          : <p className={css.notice}>{t('recommendedTemplatesPending')}</p>}
+      </article>)}
+      <div className={css.inlineActions}>
+        <Button variant="primary" disabled={disabled || !applicable} onClick={() => onApply(templates)}>
+          {t('recommendedApply')}
+        </Button>
+      </div>
+      <p><small>{t('recommendedHint')}</small></p>
+    </div>}
+  </section>
 }

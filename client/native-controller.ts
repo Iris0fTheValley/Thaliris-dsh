@@ -29,7 +29,7 @@ export interface NativeProjectionState {
   approvalError: string | undefined
 }
 
-function describeError(value: unknown): string {
+export function describeError(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'object' && value !== null) {
     const record = value as Record<string, unknown>

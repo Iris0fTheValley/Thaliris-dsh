@@ -18,7 +18,7 @@ Thaliris builds on the native Agent capabilities of Hosts such as Codex, DeepSee
 
 > **Status: Beta.** Real refactoring work has shown an implementer dispatching an investigation, a Controller starting an independent review, and counterevidence driving repairs. The sample is too small to establish a general quality or cost advantage. See [empirical observations](#empirical-observations).
 >
-> **Versions:** this document describes the source versions on each repository's `main` branch: Core 0.5.2, Codex adapter 0.5.2, Claude Code plugin 0.4.2 and DSH plugin 0.4.1. Version numbers describe source, not an installation on a given machine; updated files in a repository or on disk do not prove that a running Host has loaded the new version.
+> **Versions:** this document describes the source versions on each repository's `main` branch: Core 0.5.2, Codex adapter 0.5.2, Claude Code plugin 0.4.2 and DSH plugin 0.5.0. Version numbers describe source, not an installation on a given machine; updated files in a repository or on disk do not prove that a running Host has loaded the new version.
 
 ## Why more than context management
 
@@ -209,9 +209,11 @@ Removing Thaliris should not make the underlying development process incorrect.
 
 ## Native DSH integration
 
-@thaliris/dsh-plugin adds Thaliris task records and Controller tools to DeepSeek Harness. It uses native DSH Workspaces, persistent Sessions, Agents/subagents, Settings, the model catalog, Plugin Manager and lifecycle. A Python bridge calls the separately installed Thaliris Core; this repository does not include copies of Core or the Codex Adapter.
+@thaliris/dsh-plugin adds Thaliris task records and Controller tools to DeepSeek Harness. It uses native DSH Workspaces, persistent Sessions, Agents/subagents, Settings, the model catalog, Plugin Manager and lifecycle. A Python bridge calls the separately installed Thaliris Core (currently paired Core 0.5.2, see [Core baseline](CORE-BASELINE.md)); this repository does not include copies of Core or the Codex Adapter.
 
-The DSH policy page configures role prompts, model routes, tools, Workspaces and Memory. Initial role templates (Investigator, Implementer, Focused Implementer, Reviewer, Curator, Reasoning Specialist) use inherit routing, grant no tools and do not fix a model; route modes are inherit, fixed and allowed. Template changes do not overwrite saved user role records; roles are adjusted by editing these user-owned records, not by the Controller. An exact Workspace binding and persistent root Session are part of task association; a repository path alone does not resume an old task.
+Since 0.5.0 the plugin ships as an **optional native Agent Preset mode**: after installation Thaliris only appears in DSH's native Agent Preset roster, not selected and not the default. A normal session that has not selected Thaliris gets no Controller prompt, task tools or dynamic task context. Selection and defaulting use native DSH interactions, with no second switch.
+
+The DSH policy page configures role prompts, model routes, tools, Workspaces and Memory. Initial role templates (Investigator, Implementer, Focused Implementer, Reviewer, Curator, Reasoning Specialist) use inherit routing, do not fix a model, and grant a curated set of native DSH tools per role capability (read-only roles get read tools only; see [Native role tool permissions](#native-role-tool-permissions)); route modes are inherit, fixed and allowed. Template changes do not overwrite saved user role records; roles are adjusted by editing these user-owned records, not by the Controller. An exact Workspace binding and persistent root Session are part of task association; a repository path alone does not resume an old task.
 
 The native root Controller gets these tools; children never see them:
 
@@ -236,24 +238,109 @@ Core 0.5.0 adds a project-level identity plane: a versioned, repository-tracked 
 
 Memory is an independent optional capability and is disabled by default. The memory capability and local text provider can be installed separately; task routing and close work without Memory or the client UI. There are no embeddings/vector RAG or automatic retrieval. Memory reads follow grants, and writes follow user policy and Core task checks. See [capabilities](CAPABILITIES.md) and the [client contract](CLIENT-CONTRACT.md).
 
-## Installation and configuration
+## Installation and first use
 
-Building requires Node.js 24.9+ (matching upstream DSH `master` `engines`); running Core requires Python 3.11+. DSH plugin 0.4.1 declares an interface range, `>=0.2.1-rc.2 <0.2.2-0`, in `engines.dsh`; it admits the released `0.2.1-rc.2` and `0.2.1-rc.3` lines without an exact-version exemption or a pinned revision. For earlier DSH such as `dsh-v0.2.1-alpha.1` use DSH plugin 0.3.2. Build local archives from a compatible DSH/Core pair; the current pairing and version provenance are in [Core baseline](CORE-BASELINE.md). Build the bundle patch and shared Web/Desktop client, then pack the repository and each optional Memory component:
+DSH plugin 0.5.0 declares an interface range, `>=0.2.1-rc.2 <0.2.2-0`, in `engines.dsh`; it admits the released `0.2.1-rc.2` and `0.2.1-rc.3` lines without an exact-version exemption or a pinned revision. For earlier DSH such as `dsh-v0.2.1-alpha.1` use DSH plugin 0.3.2. Installation needs no manual packing, absolute paths or profile edits; `lib/client.js` and the other artifacts ship in the package, and there is no install hook.
 
-~~~sh
-npm run build:bundle
-DSH_SOURCE="/path/to/compatible-dsh-checkout" npm run build:client
-npm pack
-~~~
+### Install as a normal DSH plugin
 
-Install the main plugin archive through the DSH Plugin Manager. Add both optional archives only if Memory is needed:
+**Desktop / Web (graphical, recommended)**
 
-~~~sh
-PROFILE="your-profile"
-ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.4.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.2.0.tgz"
-~~~
+1. Open DSH's **Plugins** page and install from GitHub, or create a session, switch the mode selector to **Creator mode**, and ask the model to install the same address with the native `plugin_manager`: `github:Iris0fTheValley/Thaliris-dsh`.
+2. **Restart DSH** after installation, then open a session and check that Thaliris appears in Settings → Agent presets.
 
-The generated bundle disables runtime/API by default. Before enabling it, configure absolute pythonExecutable, corePath and authorityDirectory values; corePath must point to Core installed in the same Python environment, and authorityDirectory must stay outside the governed Workspace. Then register the canonical Git root as a native DSH Workspace, create or resume its persistent root Session, and bind the exact Workspace ID and root in policy. Do not store credentials in plugin configuration.
+**Web / headless (command line)**
+
+```sh
+dsh plugin --profile web add github:Iris0fTheValley/Thaliris-dsh
+```
+
+Restart the host afterwards as well.
+
+> **Install address.** The canonical install address is `github:Iris0fTheValley/Thaliris-dsh` (the default branch, 0.5.0 and later). Pin a release tag when you need a fixed version, e.g. `github:Iris0fTheValley/Thaliris-dsh#v0.5.0` (enter the same address on the Desktop Plugins page).
+
+Native limits to keep in mind:
+
+- `plugin_manager` is available only in **Creator mode** (the `cordis` preset); a normal Standard session **has no install tool**. "Ask the model to install it" therefore requires switching to Creator mode first.
+- Install, upgrade, disable and remove are host-process plugin changes: **restart DSH** to make them take effect. The native manager usually reports `restart-required`; the reason may be `unmanaged-plugin` (the change reaches a plugin running outside the plugin list — Thaliris registers its Agent Preset at runtime).
+- The npm-installed `dsh` CLI **cannot** manage the Desktop profile (it reports `profile "desktop" is managed exclusively by the Electron application`). Use the Plugins page on Desktop, or the Desktop-bundled CLI after fully quitting the app.
+- Installing from GitHub requires network access to GitHub plus git and pnpm (Desktop uses its bundled pnpm).
+
+### First use: automatic Core runtime provisioning
+
+After installation and restart the plugin is loaded. Thaliris mode does no I/O at install, bundle enablement or in unselected sessions; the **first Thaliris tool call** that needs Core provisions the runtime on demand (a human settings action can trigger it too). No global Python install is needed: DSH's bundled CPython (shipped with Desktop) is preferred, with a PATH CPython ≥ 3.11 as fallback; pip, a build backend and any third-party global tool are not required, and Node comes from DSH itself:
+
+1. Detect Python: explicit config → `THALIRIS_PYTHON` → `%DSH_HOME%\dsh-runtimes\*\dependencies\python` (DSH Desktop ships CPython 3.12) → `python3`/`python` on PATH; CPython ≥ 3.11 is required.
+2. Create an isolated `--without-pip` venv under the authority directory.
+3. Download the Core source tarball pinned by `core.lock.json` with Node `fetch`, verify its SHA-256, then install it by pure source copy (no pip, no build backend, no global tools).
+4. Verify Core version and state schema in the venv, then write `runtime.json` atomically.
+
+Measured on this host: about **1.6 s cold** (DSH-shipped CPython 3.12, normal network); later calls in the same process hit memory, and after a restart it is one import probe. First tool calls complete provisioning within the bridge timeout (30 s by default). A provisioning failure never unloads the plugin: tool calls fail with a structured code, and the settings page shows recovery guidance.
+
+- The authority directory defaults to `%USERPROFILE%\.thaliris\<profile>` (`~/.thaliris/<profile>` on Linux/macOS). It must stay outside the workspace and behind no symlink or junction.
+- Thaliris settings → General → "First-run setup" shows the runtime state, whether this process verified it, the pinned Core version, the detected Python/Core versions, the authority directory, the current step and elapsed time, plus the failure code, recovery text and detail. It offers explicit "Prepare Thaliris runtime" (retry after a failure), "Re-check runtime" and "Refresh setup status" buttons. Nothing is provisioned on page load, and Standard or unselected sessions never provision.
+- Manual overrides live under "Manual runtime paths (optional)": `pythonExecutable`, `corePath` and `authorityDirectory` are saved together with the policy through the native Settings revision fence; clearing a field restores the default, and non-absolute paths are refused. Click "Re-check runtime" after saving so the host validates the override.
+- Offline, stage the tarball matching `core.lock.json` and point the host-process `THALIRIS_CORE_TARBALL` environment variable at it.
+- Failure codes carry recovery text: `THALIRIS_PYTHON_NOT_FOUND`, `THALIRIS_PYTHON_VERSION_UNSUPPORTED`, `THALIRIS_SOURCE_FETCH_FAILED`, `THALIRIS_SOURCE_HASH_MISMATCH`, `THALIRIS_CORE_VERIFY_FAILED`, `THALIRIS_CORE_VERSION_MISMATCH`, `THALIRIS_AUTHORITY_UNSAFE`, `THALIRIS_RUNTIME_PROVISIONING`. The plugin stays loaded and the settings page stays reachable.
+
+**Workspace auto-binding happens in exactly one case:** `policy.workspaces` is empty and the current Workspace's persistent root Session explicitly selected Thaliris mode. The plugin then appends one enabled binding with the native Workspace id and canonical root (once only, reported on the settings page and in diagnostics). A non-empty list is never appended to, and an unselected session never triggers binding. Thaliris settings → Context lists every binding and badges the host-reported auto-bound row with "Auto-bound on first Thaliris use"; otherwise bind the exact native Workspace ID and root there manually. The page has no true "current Workspace" read, so "Bind most recent Workspace" picks the native Workspace with the latest Session activity (latest `updatedAt`, then `createdAt`); it only stages the binding and Save persists it. Task authority anchors on (root Session id, Workspace id): a new session or a re-registered Workspace does not resume old tasks.
+
+### Selecting the mode and setting the default
+
+- After installation and restart, Thaliris appears in the native **Agent Presets** roster (Settings → Agent presets, and the new-session mode selector) under **Custom**, with preset id `thaliris`, display name `Thaliris` and order 10 after the four built-in presets. It is **not currently selected and not the default**; the default stays `standard` and normal sessions are unchanged.
+- Select it per session in the new-session mode selector. DSH allows a mode switch only on a blank session; a session that has started (or completed a turn) cannot switch in place.
+- Set it as the default under Settings → Agent presets → "Set as new task default", or use Thaliris settings → General → "Agent Preset and new-Session default", which shows the preset health (healthy / registered but unavailable / missing), the native default, any saved override and the effective default, plus the explicit "Set Thaliris as new-Session default" / "Restore native default" actions. Both actions make the same `agent-preset-registry.selectedDefault` write as DSH's own mode picker, fenced by the native Settings revision; page load never writes a default. The default affects **new** sessions only; existing sessions are never recomposed (their `agentPreset` stays).
+- **Dangling-default risk:** if you make Thaliris the default and then disable or remove the plugin, the saved default points at a missing preset and creating an unnamed new session can fail (`agent-preset/not-found`); DSH does not self-heal. The settings page warns in that state and "Restore native default" repairs it; before disabling or removing, restore the native default (usually `standard`).
+- Headless has no Agent Preset registry: no mode appears there, the plugin still loads, and normal sessions are unchanged. Thaliris mode exists only on Web/Desktop hosts that support Agent Presets.
+
+### Native role tool permissions
+
+Role templates no longer leave `tools` empty; they grant a curated, version-stable set of native DSH tools per role capability. At dispatch only tools that the role record allows and the host catalog actually provides are kept; unknown names are filtered with a diagnostic instead of failing child creation. Controller/management tools (`thaliris_task_*`, `thaliris_workstream`, `thaliris_reconcile`, …) can never become role grants.
+
+| Role | Native tool grants |
+| --- | --- |
+| Investigator | `read`, `glob`, `grep`, `bash`, `pwsh`, `job_list`, `job_output`, `web_fetch`, `web_search`, `todo_write`, `skill` |
+| Implementer / Focused Implementer | `read`, `write`, `edit`, `glob`, `grep`, `bash`, `pwsh`, `job_list`, `job_output`, `job_kill`, `terminal_list`, `terminal_open`, `terminal_read`, `terminal_send`, `terminal_signal`, `terminal_close`, `web_fetch`, `web_search`, `todo_write`, `skill`, `present` |
+| Reviewer / Reasoning Specialist | `read`, `glob`, `grep`, `web_fetch`, `web_search` |
+| Curator | `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `skill` |
+
+Reviewer and Reasoning Specialist exist to challenge a candidate or framing independently, not to change code: they receive read tools only — no `write`/`edit`, no shell, no background jobs or terminals — so their read-only boundary is enforced by native tool grants, not just by prompt text. Curator can edit documents but has no shell; Investigator can run shell commands for evidence but has no file-editing tool.
+
+`tools: []` remains legal and grants no native tools (only a dispatch with an evidence association additionally receives `thaliris_observe`). Templates and recommended permissions only affect **newly copied templates**; the plugin **never silently rewrites saved user role records**. For upgrades from older versions, Thaliris settings → General → "Recommended native permissions" lists only enabled roles whose tool grants are empty, annotates each recommended tool as present or absent in the live host catalog, and writes `policy.roles` only when you click "Apply recommended permissions" (through the same revision fence as a normal save; nothing is written on load or render). Roles with no shipped template get no guessed recommendation; users can apply, ignore or edit manually.
+
+### Upgrade, disable and re-enable
+
+- User configuration (roles, model routes, Workspace bindings, Memory settings) lives in the active profile's `cordis.patch.yml`; task state and authority anchors live in the authority directory (outside the workspace). The native manager only changes `package.json` and the lockfile on install/upgrade/disable/remove; it does not rewrite user patch rows or delete task state.
+- Restart DSH after install, upgrade, disable and remove (the native manager reports `restart-required`, see above). After the restart, check that Settings → Agent presets still lists Thaliris and inspect the runtime status on the Thaliris settings page.
+- Row ids `thaliris`/`thaliris-api` and namespace `thaliris` stay stable; preset id is fixed at `thaliris`, so old configuration keeps loading and sessions that recorded the preset still resolve. Disabling or removing the plugin makes those sessions unresumable (`agent-preset/not-found`); re-enabling and restarting restores them.
+- This repository's documentation and tests do **not** mean any live Desktop profile has been changed; upgrading or removing the plugin on a live Desktop needs the user's own explicit action and restart.
+
+### Verification status
+
+- Checks that run in this repository: `node tests/prompt-contract.mjs` (package/preset contracts), `node tests/composition-drift.mjs` (needs `DSH_SOURCE`), `npm run test:native` (real Loader + scripted model), `npm run test:client` (shared client; 20/20 pass, including the new setup, mode/default, recommended-permission and namespace-absent cases), `npm run test:install` (packed install smoke with the 0.5.0 archive), plus the 66 bridge/Core pytest checks against a provisioned runtime. Settings-page interactions are verified with the real client module stack in jsdom.
+- Verified in isolated real 0.2.1-rc.3 hosts (separate `DSH_HOME`, never the Desktop profile): 0.5.0 installs with both rows ACTIVE; the preset appears in the roster with the default still `standard`; the Web host boots with no preset-mount diagnostic; headless boots without a registry.
+- Not verified: installing 0.5.0 into a running Desktop profile and observing it after a restart; clicking through the settings page in a real browser/Desktop UI (including a real cold "Prepare Thaliris runtime" click); rc.2 on a real host (the CI tag matrix covers the rc.2/rc.3 drift gate). Updated files on disk do not prove a running Host has loaded them.
+
+## Maintainer: build and release
+
+- Version pairing: plugin 0.5.0, Core 0.5.2 ([core.lock.json](core.lock.json)), Node.js ≥24.9, `engines.dsh >=0.2.1-rc.2 <0.2.2-0`. Current pairing and provenance are in [Core baseline](CORE-BASELINE.md).
+- Build from source (maintainer flow; users do not need it):
+
+  ```sh
+  npm run build:bundle
+  DSH_SOURCE="/path/to/compatible-dsh-checkout" npm run build:client
+  npm pack
+  ```
+
+  `lib/client.js` is prebuilt and shipped; there are no install scripts.
+- **Composition mirror maintenance (important):** a programmatic Agent Preset replaces the whole agent composition, so `composition.mjs` mirrors DSH's Standard preset (22 top-level child rows including groups/isolates/platform conditions) and appends `{ id: "thaliris-agent", name: "@thaliris/dsh-plugin/preset" }`. When DSH changes its Standard preset, the drift gate fails loudly instead of silently dropping native tools:
+
+  ```sh
+  DSH_SOURCE=/path/to/dsh-checkout node tests/composition-drift.mjs  # failure names the regeneration command
+  DSH_SOURCE=/path/to/dsh-checkout node build-composition.mjs        # regenerate and commit composition.mjs
+  ```
+
+  CI runs the drift gate on both `dsh-v0.2.1-rc.2` and `dsh-v0.2.1-rc.3` and verifies on rc.3 that regenerating `composition.mjs` produces no diff.
+- Initial role templates and recommended native grants live in `role-templates.mjs`; `build-bundle.mjs` derives `cordis.patch.yml` from them.
 
 See [capabilities](CAPABILITIES.md), the [client contract](CLIENT-CONTRACT.md), [Core baseline](CORE-BASELINE.md), [prompt contract](PROMPT-CONTRACT.md).

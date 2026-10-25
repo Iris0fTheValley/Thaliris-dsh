@@ -31,5 +31,9 @@
 .permissionRow strong { min-width: 140px; }
 .notice { padding: 9px 11px; border-radius: 8px; background: var(--dsw-alias-surface-tertiary); overflow-wrap: anywhere; }
 .error { padding: 9px 11px; border-radius: 8px; color: var(--dsw-alias-text-danger); background: var(--dsw-alias-surface-danger); }
+.keyValues { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 6px 16px; margin: 0; }
+.keyValues dt { color: var(--dsw-alias-text-secondary); font-size: 13px; }
+.keyValues dd { margin: 0; overflow-wrap: anywhere; }
+.section code { font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .card pre { max-width: 100%; max-height: 260px; overflow: auto; margin: 0; padding: 10px; border-radius: 7px; color: var(--dsw-alias-text-primary); background: var(--dsw-alias-surface-primary); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 @media (max-width: 680px) { .header, .sectionHead { align-items: flex-start; flex-direction: column; } .inline { align-items: stretch; flex-direction: column; } .inline select { width: 100%; box-sizing: border-box; } }

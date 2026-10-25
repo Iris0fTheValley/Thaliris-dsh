@@ -1,9 +1,15 @@
 # DSH prompt template contract
 
 `policy.mjs` owns the native Controller template. `role-templates.mjs` owns editable
-initial role seeds. `build-bundle.mjs` derives `cordis.patch.yml`; explicit stored
-roles (including []) remain user policy. Model routes, tool grants, memory and
-context permissions are unchanged. The Controller template puts cognitive isolation and division of labor before model choice, then picks the cheapest allowed route and lowest reasoning effort that fit the working set (cheapest for deterministic closure and CI/build observation, mid for clear-causal work, strongest for coupled or unclear work and decision-critical challenge), escalates only on evidence, and respects a role policy that allows no cheap route. DSH persona receives the selected role prompt;
+initial role seeds and their curated native DSH tool grants. `build-bundle.mjs` derives
+`cordis.patch.yml`; explicit stored roles (including []) remain user policy. Model
+routes, memory and context permissions are unchanged; the seeded tool grants are the
+per-capability native lists (investigator; implementer / focused-implementer;
+reviewer / reasoning-specialist read-only; curator), and dispatch filters unknown names
+against the host catalog instead of failing child creation. The prompt section itself is
+owned by the preset-scoped module: only a session bound to the `thaliris` Agent Preset
+receives the Controller contract, and the global host row registers no prompt or task
+context, so unselected/Standard sessions see none of it. The Controller template puts cognitive isolation and division of labor before model choice, then picks the cheapest allowed route and lowest reasoning effort that fit the working set (cheapest for deterministic closure and CI/build observation, mid for clear-causal work, strongest for coupled or unclear work and decision-critical challenge), escalates only on evidence, and respects a role policy that allows no cheap route. DSH persona receives the selected role prompt;
 selected handoff is a separate payload. Core does not infer a semantic projection.
 
 Global Codex instructions, hooks, project routers and TOML profiles are not this
@@ -18,6 +24,11 @@ status, judgment), dynamic task context, human-instructed mode switching, per-di
 model/effort selection and dispatch-time role binding, as concepts tied to the tools.
 The template also tells the Controller (Core 0.5.1 ergonomics) to record several judgments in one `thaliris_task_judge` call (`judgments`: ordered, atomic, one revision), keep reads small (`thaliris_task_status` is compact by default; `view: "full"` or `since_revision` only when needed), reuse the revision that write results return as the next `base_revision`, and on a revision conflict (nothing written) review `details.changes_since` including its open-evidence summary (an approximate hint, `exact: false`: `recent` is only the last min(revision gap, 16) items per collection and can omit items one batch wrote in a single revision; replaced fields such as Active Work, Pending Results, milestone and status, and sources, are not tracked), retry once with `details.current_revision` if the write still applies, and read compact status when Active Work/Pending Results or anything the hint does not cover is needed.
 The template also carries one Project identity paragraph (Core 0.5.0) naming `thaliris_task_identity` and its amend, challenge and relate companions: identity is separate from Task Authority, the Memory Provider, milestones and evidence; read it on demand for directional or architectural work, not ordinary local repairs; repair at the lowest sufficient layer and record a challenge instead of editing; amend only on the human owner's explicit decision; an amendment is not a memory proposal and never rewrites a running task's frozen contract; nothing propagates automatically; absent identity is normal. Core 0.5.2 natural formation replaces the old "suggest only on the user's decision" sentence with a compact paragraph: most projects start with no identity and nothing is blocked; note, do not interrupt (record the user's verbatim explicit statements of long-term purpose, direction, constraint or non-goal with `thaliris_task_identity_note`, one call, no task needed; never inferences, tentative remarks, temporary technical choices, summaries or a child's report); offer only when a close result carries `identity_offer` (once, briefly, after the work; no answer means no; never block), composing with the user's quotes and the Controller's organization shown apart and, on their yes, amending through `thaliris_task_identity_amend` with the confirmation and cited notes quoted in `decision.human_instruction` (no draft `IDENTITY.md` written by the Controller); and `thaliris_task_identity_suggest` with setting off at the scope the user named (default session, mentioning the other scopes). A user's stored `policy.controllerPrompt` is not overwritten and adopts the paragraph only through Settings editing.
+Reviewer and Reasoning Specialist remain non-writing by native tool grants: their seeds
+carry only read/glob/grep/web_fetch/web_search, with no write, edit, shell or background
+job tools, so the prompt's "remain non-writing" instruction is enforced mechanically at
+dispatch instead of resting on text alone.
+
 Template normalization adds semantic mutation/evidence practice and the full Focused
 loop/endpoint, while keeping review optional, independent and evidence based. Executors
 report criterion-linked evidence and UNKNOWN; Controller judges product completion from
@@ -28,4 +39,6 @@ See [Core design](https://github.com/Iris0fTheValley/Thaliris/blob/main/docs/tha
 for shared rationale. Rebuild the bundle, run native/scripted tests with pinned DSH
 source, then install a reviewed package into an explicitly selected profile only in
 separate closure work. Existing role records require explicit user policy editing
-to adopt templates; installing new defaults does not imply migration consent.
+to adopt templates; installing new defaults does not imply migration consent, and the
+settings page's explicit "apply recommended permissions" action is the only
+adapter-driven way saved role tool grants change.

@@ -1,4 +1,22 @@
 # Explicit local deployment configuration. Use native Workspace IDs, not caller IDs.
+#
+# This profile patch layer is optional: the shipped bundle already enables both rows with
+# tolerant config. Runtime paths are OPTIONAL since 0.5.0 — when all three are omitted the
+# plugin first uses a runtime recorded by first-run provisioning (`<authority>/runtime.json`),
+# then a host-detected bundled Python. On the first Thaliris tool call it provisions the
+# pinned Core with the shipped Python (isolated `--without-pip` venv, pinned source tarball
+# verified against core.lock.json; no pip, no global tools) inside the normal bridge timeout.
+# The same work is available as human-only Gateway actions: `setupStatus`, `prepareRuntime`,
+# `recheckRuntime` (never model tools). An unconfigured runtime fails tool calls closed with
+# THALIRIS_NOT_CONFIGURED / THALIRIS_RUNTIME_NOT_READY or a provisioning code (never at
+# plugin activation). Configure paths here only for explicit overrides; all three are
+# volatile settings fields, so the human can edit them live in native Settings.
+# The `thaliris` Agent Preset is registered programmatically by the global row; selecting
+# it (or making it the new-task default) is a native Agent Presets Settings action.
+# First-run Workspace binding: when `policy.workspaces` is EMPTY and a Thaliris-selected
+# native root's cwd resolves to a native Workspace, the plugin persists one enabled binding
+# through the native profile editor and reports it (setupStatus().workspaceAutoBind). A
+# non-empty list always requires an explicit binding; unselected sessions are never bound.
 - insert:
     - id: thaliris
       name: './index.mjs'
@@ -11,7 +29,8 @@
             - workspaceId: !!js process.env.THALIRIS_DSH_WORKSPACE_ID
               root: !!js process.env.THALIRIS_DSH_ROOT
               enabled: true
-          # An empty role set is legal. Add editable records in native Settings.
+          # An empty role set is legal. Add editable records in native Settings; seeded
+          # templates already carry curated native DSH tool grants per role capability.
           roles: []
           memory:
             mode: disabled

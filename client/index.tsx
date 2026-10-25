@@ -9,10 +9,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from './remote-types.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { RoleRecord } from '../remote'
 import type { ThalirisSettings } from './policy-controller.ts'
 import { remoteContribution } from '../remote.mjs'
 import { PolicyEditorController } from './policy-controller.ts'
 import { NativeProjectionController } from './native-controller.ts'
+import { SetupController } from './setup-controller.ts'
+import { ModeController } from './mode-controller.ts'
 import { ThalirisPage, type ThalirisPageFace } from './ThalirisPage.tsx'
 import { en, NS, zh, type LocaleKey } from './locales.ts'
 
@@ -40,21 +43,35 @@ export function apply(ctx: Context): void {
 function mountPage(ctx: Context): void {
   const policy = new PolicyEditorController(ctx.configForms.get<ThalirisSettings>('thaliris'))
   const native = new NativeProjectionController(ctx)
+  const setup = new SetupController(ctx)
+  const mode = new ModeController(ctx)
   const face: ThalirisPageFace = {
-    hooks: { policy: policy.store, native: native.store },
+    hooks: { policy: policy.store, native: native.store, setup: setup.store, mode: mode.store },
     edit: policy.edit.bind(policy),
+    editRuntime: policy.editRuntime.bind(policy),
     save: () => { void policy.save() },
     discard: () => policy.discard(),
-    refresh: () => { void native.refresh() },
+    refresh: () => { void native.refresh(); void setup.load(); void mode.load() },
     loadDiagnostics: (sessionId, taskId) => { void native.loadDiagnostics(sessionId, taskId) },
     approveMemory: (sessionId, taskId, proposalId) => { void native.approveMemory(sessionId, taskId, proposalId) },
+    loadSetup: () => { void setup.load() },
+    prepareRuntime: () => { void setup.prepare() },
+    recheckRuntime: () => { void setup.recheck() },
+    setThalirisDefault: () => { void mode.setThalirisDefault() },
+    restoreNativeDefault: () => { void mode.restoreNativeDefault() },
+    applyRecommended: (templates: readonly RoleRecord[]) => { void policy.applyRecommended(templates) },
     openPlugin: packageName => ctx.pluginNavigation.openBundle(packageName),
     openSession: sessionId => ctx.uiWorkspace.openSession(sessionId as SessionId),
   }
   ctx.effect(() => async () => {
-    await Promise.all([policy.dispose(), native.dispose()])
+    await Promise.all([policy.dispose(), native.dispose(), mode.dispose()])
+    setup.dispose()
   }, 'thaliris-client: native projection subscriptions')
   void native.refresh()
+  void setup.load()
+  void mode.load()
+  // The roster namespace may mount after this page; reload it once it appears.
+  ctx.inject(['remote.agentPresets'], () => { void mode.load() })
   ctx.effect(() => ctx.configForms.whileServed(['thaliris'], () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
     name: 'plugins.item',
     id: 'thaliris',

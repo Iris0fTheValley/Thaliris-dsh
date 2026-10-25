@@ -17,6 +17,12 @@ import { NS, en } from '../client/locales.ts'
 import { PolicyEditorController, type ThalirisSettings } from '../client/policy-controller.ts'
 import type { NativeProjectionState } from '../client/native-controller.ts'
 import { NativeProjectionController } from '../client/native-controller.ts'
+import type { SetupControllerState } from '../client/setup-controller.ts'
+import { SetupController } from '../client/setup-controller.ts'
+import type { AgentPresetRegistrySettings, ModeControllerState } from '../client/mode-controller.ts'
+import {
+  ModeController, danglingDefault, isThalirisDefault, thalirisHealthy,
+} from '../client/mode-controller.ts'
 import { ThalirisPage, type ThalirisPageFace } from '../client/ThalirisPage.tsx'
 import { remoteContribution } from '../remote.mjs'
 
@@ -45,6 +51,12 @@ function createForm(value = policy(), writable = true) {
     if (!writable || expected !== snapshot.revision) return false
     const next = structuredClone(snapshot.value!)
     for (const op of ops) {
+      if (op.path.length === 1) {
+        const field = op.path[0] as 'pythonExecutable' | 'corePath' | 'authorityDirectory'
+        if (op.op === 'set') next[field] = op.value as string
+        else delete next[field]
+        continue
+      }
       if (op.path[0] !== 'policy') throw new Error(`unexpected path ${op.path.join('.')}`)
       const field = op.path[1] as keyof UserPolicy
       if (op.op === 'set') next.policy[field] = structuredClone(op.value) as never
@@ -60,6 +72,48 @@ function createForm(value = policy(), writable = true) {
     unset: async () => false,
   }
   return { form, mutate, publish, getSnapshot: () => snapshot }
+}
+
+/** Native Agent Preset registry settings namespace as the page reads it. */
+function createRegistryForm(initial: AgentPresetRegistrySettings = { default: 'standard' }) {
+  let snapshot: ConfigFormSnapshot<AgentPresetRegistrySettings> = {
+    status: 'ready', value: { ...initial }, base: {}, user: {}, revision: 7, writable: true, mode: 'host',
+  }
+  const listeners = new Set<() => void>()
+  const publish = (next: ConfigFormSnapshot<AgentPresetRegistrySettings>): void => {
+    snapshot = next
+    for (const listener of [...listeners]) listener()
+  }
+  const form: ConfigForm<AgentPresetRegistrySettings> = {
+    getSnapshot: () => snapshot,
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    mutate: vi.fn(async () => false),
+    set: vi.fn(async () => false),
+    unset: vi.fn(async () => false),
+  }
+  return { form, publish, getSnapshot: () => snapshot }
+}
+
+const setupState = (patch: Partial<SetupControllerState> = {}) => createSnapshotStore<SetupControllerState>({
+  status: 'idle', setup: undefined, error: undefined, action: 'idle', actionError: undefined, ...patch,
+})
+
+const modeState = (patch: Partial<ModeControllerState> = {}) => createSnapshotStore<ModeControllerState>({
+  status: 'idle', error: undefined, presets: [], registryAvailable: false, writable: false,
+  nativeDefault: undefined, selectedDefault: undefined, saving: false, saveError: undefined, ...patch,
+})
+
+function failedSetup(): SetupControllerState {
+  return {
+    status: 'ready', error: undefined, action: 'idle', actionError: undefined,
+    setup: {
+      state: 'failed', verified: false, code: 'THALIRIS_PYTHON_NOT_FOUND',
+      recovery: 'Install CPython 3.11 or newer, then retry.', detail: 'no interpreter was found',
+      step: null, attempt: 1, elapsed_ms: 25, progress: null, configured: false, manual_override: false,
+      authorityDirectory: 'C:/Users/test/.thaliris/dsh', runtime: null,
+      pin: { version: '0.5.2', commit: 'abcdef1234567890', stateSchemaVersion: 7 }, workspaceAutoBind: null,
+    },
+  }
 }
 
 const modelCatalog = {
@@ -113,17 +167,24 @@ function useStore<T>(store: SnapshotStore<T>) {
   return <S,>(select: (state: T) => S): S => useSyncExternalStore(store.subscribe, () => select(store.getSnapshot()), () => select(store.getSnapshot()))
 }
 
-function renderPage(editor: PolicyEditorController, native = createSnapshotStore(nativeState())) {
+function renderPage(editor: PolicyEditorController, native = createSnapshotStore(nativeState()),
+  setup = setupState(), mode = modeState()) {
   const actions = {
     save: vi.fn(() => { void editor.save() }), discard: vi.fn(() => editor.discard()), refresh: vi.fn(),
     loadDiagnostics: vi.fn(), openPlugin: vi.fn(), openSession: vi.fn(), approveMemory: vi.fn(),
+    editRuntime: vi.fn((field: 'pythonExecutable' | 'corePath' | 'authorityDirectory', value: string) => editor.editRuntime(field, value)),
+    loadSetup: vi.fn(), prepareRuntime: vi.fn(), recheckRuntime: vi.fn(),
+    setThalirisDefault: vi.fn(), restoreNativeDefault: vi.fn(),
+    applyRecommended: vi.fn((templates: readonly RoleRecord[]) => { void editor.applyRecommended(templates) }),
   }
   const face: ThalirisPageFace = {
-    hooks: { policy: editor.store, native },
+    hooks: { policy: editor.store, native, setup, mode },
     edit: editor.edit.bind(editor), ...actions,
   }
   const t = (key: keyof typeof en) => en[key]
-  render(<ThalirisPage {...face as never} view="page" t={t as never} usePolicy={useStore(editor.store)} useNative={useStore(native)} />)
+  render(<ThalirisPage {...face as never} view="page" t={t as never}
+    usePolicy={useStore(editor.store)} useNative={useStore(native)}
+    useSetup={useStore(setup)} useMode={useStore(mode)} />)
   return { actions, native }
 }
 
@@ -366,74 +427,364 @@ describe('shared Thaliris settings client', () => {
     expect(screen.getByLabelText(en.controllerPrompt).matches(':disabled')).toBe(true)
     expect((screen.getByRole('button', { name: en.save }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('renders the first-run setup status, recovery text and only explicit prepare/re-check actions', async () => {
+    const editor = new PolicyEditorController(createForm().form)
+    const failed = setupState(failedSetup())
+    const { actions } = renderPage(editor, createSnapshotStore(nativeState()), failed)
+
+    expect(screen.getByText(en.stateFailed)).toBeTruthy()
+    expect(screen.getByText('THALIRIS_PYTHON_NOT_FOUND')).toBeTruthy()
+    expect(screen.getByText(/Install CPython 3\.11 or newer/)).toBeTruthy()
+    expect(screen.getByText(/no interpreter was found/)).toBeTruthy()
+    expect(screen.getByText(/0\.5\.2 @ abcdef123456/)).toBeTruthy()
+    expect(screen.getByText('C:/Users/test/.thaliris/dsh')).toBeTruthy()
+    expect(actions.prepareRuntime).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: en.setupRetry }))
+    expect(actions.prepareRuntime).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: en.setupRecheck }))
+    expect(actions.recheckRuntime).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: en.setupRefresh }))
+    expect(actions.loadSetup).toHaveBeenCalledTimes(1)
+
+    act(() => failed.update(state => { state.action = 'preparing' }))
+    const preparing = screen.getByRole('button', { name: en.setupPreparing }) as HTMLButtonElement
+    expect(preparing.disabled).toBe(true)
+    expect((screen.getByRole('button', { name: en.setupRecheck }) as HTMLButtonElement).disabled).toBe(true)
+    await editor.dispose()
+  })
+
+  it('saves optional runtime path overrides with revision CAS, validates absolute paths and unsets cleared fields', async () => {
+    const backing = createForm()
+    const editor = new PolicyEditorController(backing.form)
+    renderPage(editor)
+
+    fireEvent.change(screen.getByLabelText(en.setupPythonOverride), { target: { value: 'C:/python/python.exe' } })
+    fireEvent.change(screen.getByLabelText(en.setupAuthorityOverride), { target: { value: 'C:/thaliris' } })
+    expect(editor.getSnapshot().dirtyRuntimeFields).toEqual(['pythonExecutable', 'authorityDirectory'])
+    expect(editor.getSnapshot().dirty).toBe(true)
+    await act(async () => { await editor.save() })
+    expect(backing.mutate).toHaveBeenCalledTimes(1)
+    expect(backing.mutate.mock.calls[0]?.[0]).toEqual([
+      { op: 'set', path: ['pythonExecutable'], value: 'C:/python/python.exe' },
+      { op: 'set', path: ['authorityDirectory'], value: 'C:/thaliris' },
+    ])
+    expect(backing.mutate.mock.calls[0]?.[1]).toBe(8)
+    expect(backing.getSnapshot().value?.pythonExecutable).toBe('C:/python/python.exe')
+
+    fireEvent.change(screen.getByLabelText(en.setupCoreOverride), { target: { value: 'relative/core' } })
+    expect(screen.getByText(en.setupInvalidLocation)).toBeTruthy()
+    expect(await editor.save()).toBe(false)
+    expect(backing.mutate).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(screen.getByLabelText(en.setupCoreOverride), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText(en.setupPythonOverride), { target: { value: '' } })
+    await act(async () => { await editor.save() })
+    const ops = backing.mutate.mock.calls[1]?.[0] as { op: string; path: string[] }[]
+    expect(ops).toHaveLength(2)
+    expect(ops).toEqual(expect.arrayContaining([
+      { op: 'unset', path: ['corePath'] }, { op: 'unset', path: ['pythonExecutable'] },
+    ]))
+    expect(backing.getSnapshot().value?.pythonExecutable).toBeUndefined()
+    await editor.dispose()
+  })
+
+  it('shows native preset health and the new-Session default, writes only on click and warns about a dangling default', async () => {
+    const editor = new PolicyEditorController(createForm().form)
+    const mode = modeState({
+      status: 'ready', registryAvailable: true, writable: true, nativeDefault: 'standard',
+      presets: [{ id: 'standard', isDefault: true }, { id: 'thaliris', name: 'Thaliris', isDefault: false }],
+    })
+    const { actions } = renderPage(editor, createSnapshotStore(nativeState()), setupState(), mode)
+
+    expect(screen.getByText(en.modeHealthy)).toBeTruthy()
+    expect(screen.getByText(en.modeIsOtherDefault)).toBeTruthy()
+    expect(screen.getAllByText('standard').length).toBeGreaterThan(0)
+    expect(actions.setThalirisDefault).not.toHaveBeenCalled()
+    expect(actions.restoreNativeDefault).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: en.modeSetDefault }))
+    expect(actions.setThalirisDefault).toHaveBeenCalledTimes(1)
+
+    act(() => mode.update(state => {
+      state.selectedDefault = 'thaliris'
+      state.presets = [{ id: 'standard' }, { id: 'thaliris', name: 'Thaliris', isDefault: true }]
+    }))
+    expect(screen.getByText(en.modeIsDefault)).toBeTruthy()
+    expect(screen.getByText(en.modeDanglingWarning)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.modeRestoreDefault }))
+    expect(actions.restoreNativeDefault).toHaveBeenCalledTimes(1)
+
+    act(() => mode.update(state => {
+      state.selectedDefault = 'removed-preset'
+      state.presets = [{ id: 'standard' }, { id: 'thaliris', name: 'Thaliris' }]
+    }))
+    expect(screen.getByText(en.modeNoDefault)).toBeTruthy()
+    expect(screen.getByText(en.modeDanglingResolve)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.modeRestoreDefault }))
+    expect(actions.restoreNativeDefault).toHaveBeenCalledTimes(2)
+    await editor.dispose()
+  })
+
+  it('shows the reported first-use auto-binding and binds the most recent native Workspace only on click', async () => {
+    const editor = new PolicyEditorController(createForm().form)
+    const setup = setupState({
+      status: 'ready',
+      setup: {
+        ...failedSetup().setup!, state: 'ready', verified: true, code: null, recovery: null, detail: null, step: 'ready',
+        workspaceAutoBind: { workspaceId: 'workspace-1', root: 'C:/repo', enabled: true, at: '2026-10-25T12:00:00.000Z' },
+      },
+    })
+    const native = createSnapshotStore(nativeState())
+    act(() => native.update(state => {
+      state.workspaces = {
+        ...workspaces,
+        items: [{ workspaceId: 'workspace-2', path: 'C:/next', title: 'Next', sessionIds: ['root-session'], createdAt: '2026-10-20T00:00:00.000Z', updatedAt: '2026-10-24T00:00:00.000Z' }],
+      }
+      state.sessions = {
+        ...sessions,
+        byId: { ...sessions.byId, 'root-session': { ...sessions.byId['root-session']!, updatedAt: 1_760_000_000_000 } },
+      }
+    }))
+    renderPage(editor, native, setup)
+    fireEvent.click(screen.getByRole('tab', { name: en.tabContext }))
+
+    expect(screen.getByText(en.workspaceAutoBoundTitle)).toBeTruthy()
+    expect(screen.getByText(`${en.workspaceAutoBindAt}: 2026-10-25T12:00:00.000Z`)).toBeTruthy()
+    expect(screen.getByText(en.workspaceAutoBindStale)).toBeTruthy()
+    expect(editor.getSnapshot().dirty).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: en.workspaceBindRecent }))
+    expect(editor.getSnapshot().draft?.workspaces).toEqual([{ workspaceId: 'workspace-2', root: 'C:/next', enabled: true }])
+    expect(editor.getSnapshot().dirty).toBe(true)
+    await editor.dispose()
+  })
+
+  it('lists enabled roles with empty grants and applies the shipped recommendation only on click', async () => {
+    const backing = createForm()
+    const editor = new PolicyEditorController(backing.form)
+    const native = createSnapshotStore(nativeState())
+    act(() => native.update(state => {
+      state.templates = [{ ...role('implementer'), tools: ['read', 'bash'] }]
+    }))
+    renderPage(editor, native)
+
+    expect(backing.mutate).not.toHaveBeenCalled()
+    expect(screen.getByText(en.recommendedTools)).toBeTruthy()
+    const card = screen.getByText(en.recommendedTools).closest('article')!
+    expect(within(card).getByText('bash')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.recommendedApply }))
+    await act(async () => { await Promise.resolve() })
+    expect(backing.mutate).toHaveBeenCalledTimes(1)
+    expect(backing.mutate.mock.calls[0]?.[0]).toEqual([
+      { op: 'set', path: ['policy', 'roles'], value: [{ ...editor.getSnapshot().draft!.roles[0], tools: ['read', 'bash'] }] },
+    ])
+    expect(backing.getSnapshot().value?.policy.roles[0]?.tools).toEqual(['read', 'bash'])
+    expect(screen.getByText(en.recommendedNone)).toBeTruthy()
+    await editor.dispose()
+  })
 })
+
+describe('Thaliris setup and mode controllers', () => {
+  const baseStatus = {
+    state: 'unconfigured', verified: false, code: 'THALIRIS_NOT_CONFIGURED', recovery: 'Open Settings',
+    detail: null, step: null, attempt: 0, elapsed_ms: null, progress: null, configured: false,
+    manual_override: false, authorityDirectory: 'C:/auth', runtime: null,
+    pin: { version: '0.5.2', commit: 'abc', stateSchemaVersion: 7 },
+  }
+
+  it('reads setup status without provisioning, reports the auto-bound row and runs explicit actions', async () => {
+    const setupStatus = vi.fn(async () => ({ ok: true, value: {
+      ...baseStatus, workspaceAutoBind: { workspaceId: 'workspace-1', root: 'C:/repo', enabled: true, at: '2026-10-25T00:00:00.000Z' },
+    } }))
+    const prepareRuntime = vi.fn(async () => ({ ok: true, value: {
+      ...baseStatus, state: 'ready', verified: true, code: null, recovery: null, step: 'ready',
+      ok: true, already: false, provisioned: true, runtime: { pythonExecutable: 'C:/runtime/python.exe', corePath: 'C:/runtime/site-packages' },
+    } }))
+    const recheckRuntime = vi.fn(async () => ({ ok: true, value: { ...baseStatus, state: 'ready', verified: true, code: null, recovery: null, step: 'ready' } }))
+    const controller = new SetupController({
+      get: (name: string) => name === 'remote.thaliris' ? { setupStatus, prepareRuntime, recheckRuntime } : undefined,
+    } as never)
+
+    await controller.load()
+    expect(prepareRuntime).not.toHaveBeenCalled()
+    expect(recheckRuntime).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().status).toBe('ready')
+    expect(controller.getSnapshot().setup?.workspaceAutoBind).toEqual({
+      workspaceId: 'workspace-1', root: 'C:/repo', enabled: true, at: '2026-10-25T00:00:00.000Z',
+    })
+
+    expect(await controller.prepare()).toBe(true)
+    expect(prepareRuntime).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().setup?.state).toBe('ready')
+    expect(controller.getSnapshot().setup?.runtime?.pythonExecutable).toBe('C:/runtime/python.exe')
+    expect(controller.getSnapshot().action).toBe('idle')
+
+    expect(await controller.recheck()).toBe(true)
+    expect(recheckRuntime).toHaveBeenCalledTimes(1)
+    controller.dispose()
+  })
+
+  it('reports a transport failure from an explicit action without losing the last status', async () => {
+    const setupStatus = vi.fn(async () => ({ ok: true, value: baseStatus }))
+    const prepareRuntime = vi.fn(async () => { throw new Error('gateway/invocation-unavailable') })
+    const controller = new SetupController({
+      get: (name: string) => name === 'remote.thaliris' ? { setupStatus, prepareRuntime, recheckRuntime: setupStatus } : undefined,
+    } as never)
+
+    await controller.load()
+    expect(await controller.prepare()).toBe(false)
+    expect(controller.getSnapshot().action).toBe('idle')
+    expect(controller.getSnapshot().actionError).toContain('gateway/invocation-unavailable')
+    expect(controller.getSnapshot().setup?.state).toBe('unconfigured')
+    controller.dispose()
+  })
+
+  it('writes the native preset default with revision CAS, restores the recorded default and never writes on load', async () => {
+    const registry = createRegistryForm()
+    const update = vi.fn(async (_namespace: string, patch: Record<string, unknown>) => {
+      const current = registry.getSnapshot()
+      registry.publish({ ...current, value: { ...current.value, ...patch }, revision: current.revision! + 1 })
+      return { ok: true, value: {} }
+    })
+    const list = vi.fn(async () => ({ ok: true, value: { presets: [
+      { id: 'standard', isDefault: true }, { id: 'thaliris', name: 'Thaliris', isDefault: false },
+    ] } }))
+    const controller = new ModeController({
+      configForms: { get: () => registry.form },
+      get: (name: string) => name === 'remote.agentPresets' ? { list }
+        : name === 'remote.settings' ? { update }
+          : name === 'remote' ? { $on: () => () => {} } : undefined,
+      on: () => () => {},
+    } as never)
+
+    await controller.load()
+    expect(update).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().presets).toHaveLength(2)
+    expect(controller.getSnapshot().nativeDefault).toBe('standard')
+    expect(thalirisHealthy(controller.getSnapshot())).toBe(true)
+    expect(isThalirisDefault(controller.getSnapshot())).toBe(false)
+    expect(danglingDefault(controller.getSnapshot())).toBe(false)
+
+    expect(await controller.setThalirisDefault()).toBe(true)
+    expect(update).toHaveBeenCalledWith('agent-preset-registry', { selectedDefault: 'thaliris' }, 7)
+    expect(registry.getSnapshot().value?.selectedDefault).toBe('thaliris')
+
+    expect(await controller.restoreNativeDefault()).toBe(true)
+    expect(update).toHaveBeenLastCalledWith('agent-preset-registry', { selectedDefault: 'standard' }, 8)
+    controller.dispose()
+  })
+
+  it('treats a missing native preset registry as unavailable and never writes', async () => {
+    const update = vi.fn(async () => ({ ok: true, value: {} }))
+    const controller = new ModeController({
+      configForms: { get: () => createRegistryForm().form },
+      get: (name: string) => name === 'remote.settings' ? { update }
+        : name === 'remote' ? { $on: () => () => {} } : undefined,
+      on: () => () => {},
+    } as never)
+    await controller.load()
+    expect(controller.getSnapshot().status).toBe('unavailable')
+    expect(await controller.setThalirisDefault()).toBe(false)
+    expect(update).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+})
+
+interface MountOptions {
+  /** Override the page-namespace watch; the default registers immediately. */
+  whileServed?: (namespaces: readonly string[], register: () => () => void) => () => void
+}
+
+/** Mount the real client plugin over the real Gateway and primitives with fixture RPC answers. */
+async function mountSharedClient(options: MountOptions = {}) {
+  const { apply, inject } = await import('../client/index.tsx')
+  const ctx = new Context()
+  await ctx.plugin(SlotRegistry).await()
+  const slots = ctx.get('slots') as SlotRegistry
+  const removeRoot = slots.register({
+    name: 'root', children: { 'plugins.item': { kind: 'list', scope: 'root' } },
+  } as never, () => null)
+  const locale = new LocaleRuntime(ctx)
+  locale.setLocale('en')
+  const backing = createForm()
+  const configForms = {
+    get: () => backing.form,
+    whileServed(namespaces: readonly string[], register: () => () => void) {
+      return options.whileServed === undefined ? register() : options.whileServed(namespaces, register)
+    },
+  }
+  const emptySessions = { ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }
+  const emptyWorkspaces = { ...workspaces, items: [] }
+  const source = <T,>(initial: T) => ({ getSnapshot: () => initial, subscribe: () => () => {} })
+  // Use the real Gateway namespace services: a plain remote.thaliris object
+  // bypasses Cordis dependency tracing and hid the production injection bug.
+  const call = vi.fn(async (_path: string, endpoint: string) => {
+    const values: Record<string, unknown> = {
+      'session/modelCatalog': modelCatalog,
+      'thaliris/templates': [role('reviewer')],
+      'thaliris/providers': [{ id: 'local', name: 'Local' }],
+      'thaliris/toolCatalog': [{ name: 'read_file', description: 'Read one file' }],
+      'thaliris/diagnostics': diagnostics,
+      'thaliris/approveMemory': { approval_id: 'approval-1' },
+      'thaliris/setupStatus': {
+        state: 'ready', verified: true, code: null, recovery: null, detail: null, step: 'ready',
+        attempt: 0, elapsed_ms: 12, progress: null, configured: false, manual_override: false,
+        authorityDirectory: 'C:/authority',
+        runtime: { pythonExecutable: 'C:/runtime/python.exe', corePath: 'C:/runtime/site-packages', version: '0.5.2' },
+        pin: { version: '0.5.2', commit: 'abc', stateSchemaVersion: 7 }, workspaceAutoBind: null,
+      },
+    }
+    if (!(endpoint in values)) throw new Error(`Unexpected endpoint: ${endpoint}`)
+    return { ok: true, value: values[endpoint] }
+  })
+  // A UI client answers forwarded interactions, which is what enables remote events
+  // ($on). The fixture socket never opens (RPC calls go through `call`) and reports
+  // its close so Gateway teardown settles.
+  const idleSocket = () => {
+    const closers = new Set<(event: object) => void>()
+    const socket = { readyState: 0, send: () => {},
+      close: () => { if (socket.readyState === 3) return; socket.readyState = 3; for (const listener of [...closers]) listener({}) },
+      addEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.add(listener) },
+      removeEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.delete(listener) } }
+    return socket
+  }
+  const idleStore = { getSnapshot: () => undefined, subscribe: () => () => {} }
+  ctx.provide('connection', {
+    interactions: 'answer', openWebSocket: idleSocket, isLoopback: true, generation: idleStore, state: idleStore, reconnect: () => {},
+    rpc: { call }, registerGenerationSource: () => () => {}, start: () => ({ stop: () => {} }),
+  })
+  await ctx.plugin(TypertRegistry)
+  const gateway = ctx.plugin(Gateway)
+  await gateway
+  const unmountSession = await ctx.remote.$mount({ package: '@fixture/session', descriptors: [{
+    ...remoteContribution.descriptors[0], id: '@fixture/session#session/modelCatalog',
+    service: 'sessionController', namespace: 'session', method: 'modelCatalog',
+  }] })
+  ctx.provide('locale', locale)
+  ctx.provide('configForms', configForms)
+  ctx.provide('sessions', { list: source(emptySessions), using: vi.fn(async (_id, _options, callback) => callback()) })
+  ctx.provide('workspaces', { list: source(emptyWorkspaces) })
+  ctx.provide('uiWorkspace', { openSession: vi.fn() })
+  ctx.provide('pluginNavigation', { openBundle: vi.fn() })
+  const plugin = ctx.plugin({ inject, apply })
+  await plugin.await()
+  return {
+    ctx, slots, call, backing, plugin, gateway, unmountSession, removeRoot,
+    entry: () => slots.entries('plugins.item')[0],
+    dispose: async () => {
+      await plugin.dispose()
+      await unmountSession()
+      await gateway.dispose()
+      removeRoot()
+    },
+  }
+}
 
 describe('shared client lifecycle', () => {
   it('mounts while native settings are served and removes the slot and native Gateway contribution on unload', async () => {
-    const { apply, inject } = await import('../client/index.tsx')
-    const ctx = new Context()
-    await ctx.plugin(SlotRegistry).await()
-    const slots = ctx.get('slots') as SlotRegistry
-    const removeRoot = slots.register({
-      name: 'root', children: { 'plugins.item': { kind: 'list', scope: 'root' } },
-    } as never, () => null)
-    const locale = new LocaleRuntime(ctx)
-    locale.setLocale('en')
-    const backing = createForm()
-    const configForms = {
-      get: () => backing.form,
-      whileServed(_namespaces: readonly string[], register: () => () => void) { return register() },
-    }
-    const emptySessions = { ids: [], byId: {}, phase: 'ready', projectionsBySession: {} }
-    const emptyWorkspaces = { ...workspaces, items: [] }
-    const source = <T,>(initial: T) => ({ getSnapshot: () => initial, subscribe: () => () => {} })
-    // Use the real Gateway namespace services: a plain remote.thaliris object
-    // bypasses Cordis dependency tracing and hid the production injection bug.
-    const call = vi.fn(async (_path: string, endpoint: string) => {
-      const values: Record<string, unknown> = {
-        'session/modelCatalog': modelCatalog,
-        'thaliris/templates': [role('reviewer')],
-        'thaliris/providers': [{ id: 'local', name: 'Local' }],
-        'thaliris/toolCatalog': [{ name: 'read_file', description: 'Read one file' }],
-        'thaliris/diagnostics': diagnostics,
-        'thaliris/approveMemory': { approval_id: 'approval-1' },
-      }
-      if (!(endpoint in values)) throw new Error(`Unexpected endpoint: ${endpoint}`)
-      return { ok: true, value: values[endpoint] }
-    })
-    // A UI client answers forwarded interactions, which is what enables remote events
-    // ($on). The fixture socket never opens (RPC calls go through `call`) and reports
-    // its close so Gateway teardown settles.
-    const idleSocket = () => {
-      const closers = new Set<(event: object) => void>()
-      const socket = { readyState: 0, send: () => {},
-        close: () => { if (socket.readyState === 3) return; socket.readyState = 3; for (const listener of [...closers]) listener({}) },
-        addEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.add(listener) },
-        removeEventListener: (event: string, listener: (event: object) => void) => { if (event === 'close') closers.delete(listener) } }
-      return socket
-    }
-    const idleStore = { getSnapshot: () => undefined, subscribe: () => () => {} }
-    ctx.provide('connection', {
-      interactions: 'answer', openWebSocket: idleSocket, isLoopback: true, generation: idleStore, state: idleStore, reconnect: () => {},
-      rpc: { call }, registerGenerationSource: () => () => {}, start: () => ({ stop: () => {} }),
-    })
-    await ctx.plugin(TypertRegistry)
-    const gateway = ctx.plugin(Gateway)
-    await gateway
-    const unmountSession = await ctx.remote.$mount({ package: '@fixture/session', descriptors: [{
-      ...remoteContribution.descriptors[0], id: '@fixture/session#session/modelCatalog',
-      service: 'sessionController', namespace: 'session', method: 'modelCatalog',
-    }] })
-    ctx.provide('locale', locale)
-    ctx.provide('configForms', configForms)
-    ctx.provide('sessions', { list: source(emptySessions), using: vi.fn(async (_id, _options, callback) => callback()) })
-    ctx.provide('workspaces', { list: source(emptyWorkspaces) })
-    ctx.provide('uiWorkspace', { openSession: vi.fn() })
-    ctx.provide('pluginNavigation', { openBundle: vi.fn() })
-    const plugin = ctx.plugin({ inject, apply })
-    await plugin.await()
-    await waitFor(() => expect(slots.entries('plugins.item')).toHaveLength(1))
-    const entry = slots.entries('plugins.item')[0]!
+    const client = await mountSharedClient()
+    await waitFor(() => expect(client.slots.entries('plugins.item')).toHaveLength(1))
+    const entry = client.entry()!
     expect(entry.options).toMatchObject({ id: 'thaliris', order: 40 })
     const face = entry.inject!() as ThalirisPageFace
     await waitFor(() => {
@@ -443,18 +794,32 @@ describe('shared client lifecycle', () => {
         toolStatus: 'ready', tools: [{ name: 'read_file', description: 'Read one file' }],
       })
     })
+    await waitFor(() => {
+      expect(face.hooks.setup.getSnapshot()).toMatchObject({
+        status: 'ready', setup: { state: 'ready', verified: true, authorityDirectory: 'C:/authority' },
+      })
+    })
+    expect(face.hooks.mode.getSnapshot().status).toBe('unavailable')
     face.loadDiagnostics('root-session', 'task-1')
     await waitFor(() => expect(face.hooks.native.getSnapshot()).toMatchObject({ diagnosticStatus: 'ready', diagnostics }))
     face.approveMemory('root-session', 'task-1', 'proposal-1')
     await waitFor(() => expect(face.hooks.native.getSnapshot()).toMatchObject({ approvalStatus: 'ready', approvalReceipt: { approval_id: 'approval-1' } }))
-    expect(call).toHaveBeenCalledWith('/api', 'thaliris/diagnostics', { args: { sessionId: 'root-session', taskId: 'task-1' } }, expect.any(AbortSignal))
-    expect(call).toHaveBeenCalledWith('/api', 'thaliris/approveMemory', { args: { sessionId: 'root-session', taskId: 'task-1', proposalId: 'proposal-1' } }, expect.any(AbortSignal))
+    expect(client.call).toHaveBeenCalledWith('/api', 'thaliris/diagnostics', { args: { sessionId: 'root-session', taskId: 'task-1' } }, expect.any(AbortSignal))
+    expect(client.call).toHaveBeenCalledWith('/api', 'thaliris/approveMemory', { args: { sessionId: 'root-session', taskId: 'task-1', proposalId: 'proposal-1' } }, expect.any(AbortSignal))
+    expect(client.call).toHaveBeenCalledWith('/api', 'thaliris/setupStatus', { args: {} }, expect.any(AbortSignal))
     expect(typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label).toBe('Thaliris')
-    await plugin.dispose()
-    expect(slots.entries('plugins.item')).toHaveLength(0)
-    expect(ctx.get('remote.thaliris')).toBeUndefined()
-    await unmountSession()
-    await gateway.dispose()
-    removeRoot()
+    await client.plugin.dispose()
+    expect(client.slots.entries('plugins.item')).toHaveLength(0)
+    expect(client.ctx.get('remote.thaliris')).toBeUndefined()
+    await client.unmountSession()
+    await client.gateway.dispose()
+    client.removeRoot()
+  })
+
+  it('does not render the page when the Thaliris settings namespace is absent', async () => {
+    const client = await mountSharedClient({ whileServed: () => () => {} })
+    expect(client.slots.entries('plugins.item')).toHaveLength(0)
+    expect(client.ctx.get('remote.thaliris')).toBeDefined()
+    await client.dispose()
   })
 })
