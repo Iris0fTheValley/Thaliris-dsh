@@ -59,9 +59,35 @@ writeFileSync(anchor, JSON.stringify({ name: 'thaliris-isolated-installation', p
 // The installed package resolves its DSH peer modules from the host installation in a real
 // profile; this fixture profile has no host packages, so expose the version-matched ones the
 // plugin imports (schemastery/dsh-tools/dsh-typert-protocol) one level above the profile.
+// Resolve each package from a host consumer instead of assuming a hoisted layout: CI installs
+// DSH with pnpm's isolated linker, where only consumer-scoped links exist.
+const sourceRoot = process.env.DSH_SOURCE!
+const { createRequire } = await import('node:module')
+const { dirname } = await import('node:path')
+const hostPackageDirectory = (name: string): string => {
+  // Workspace/vendor locations are stable across linkers; prefer them over consumer resolution.
+  const direct: Record<string, string> = {
+    '@deepseek-ai/schemastery': 'vendor/schemastery',
+    '@deepseek-ai/dsh-tools': 'packages/core/tools',
+    '@deepseek-ai/dsh-typert-protocol': 'packages/typert/protocol',
+  }
+  const directDirectory = direct[name]
+  if (directDirectory !== undefined && existsSync(join(sourceRoot, directDirectory, 'package.json'))) return resolve(sourceRoot, directDirectory)
+  const bases = [
+    resolve(sourceRoot, 'package.json'),
+    resolve(sourceRoot, 'packages/core/tools/package.json'),
+    resolve(sourceRoot, 'packages/api/gateway/package.json'),
+    resolve(sourceRoot, 'packages/boot/app-boot/package.json'),
+    resolve(sourceRoot, 'packages/preset/agent-preset-registry/package.json'),
+  ]
+  for (const base of bases) {
+    try { return dirname(createRequire(base).resolve(`${name}/package.json`)) } catch { /* try the next consumer */ }
+  }
+  throw new Error(`cannot resolve host package ${name} from the DSH source checkout`)
+}
 mkdirSync(join(home, 'node_modules', '@deepseek-ai'), { recursive: true })
 for (const dependency of ['schemastery', 'dsh-tools', 'dsh-typert-protocol']) {
-  symlinkSync(join(process.env.DSH_SOURCE!, 'node_modules', '@deepseek-ai', dependency), join(home, 'node_modules', '@deepseek-ai', dependency), 'junction')
+  symlinkSync(hostPackageDirectory(`@deepseek-ai/${dependency}`), join(home, 'node_modules', '@deepseek-ai', dependency), 'junction')
 }
 mkdirSync(profileDirectory, { recursive: true })
 writeFileSync(join(profileDirectory, '.npmrc'), 'auto-install-peers=false\noffline=true\n')
