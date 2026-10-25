@@ -7,7 +7,8 @@
 //   * the Python Core bridge and Workspace/root binding used by both halves,
 //   * Gateway-facing data for the shared Web/Desktop settings page,
 //   * registration of the persistent `thaliris` Agent Preset when the host registry exists.
-// All model-visible surface (the 19 Controller/evidence/memory tools, the Controller prompt
+// All model-visible surface (17 Controller tools including anchor recovery, 3 memory tools and the
+// dispatch-granted evidence tool, plus the Controller prompt
 // section, dynamic task context, `agent/created` child composition and dispatch) lives in
 // ./preset.mjs, which the preset mounts only for sessions bound to the preset. That split is
 // what keeps an unselected/standard session free of Thaliris tools and prompt contributions.
@@ -28,6 +29,8 @@ export const name = 'thaliris-dsh'
 export const inject = ['agents', 'subprocess', 'sessionPersistence', 'tools']
 
 const bridgePath = fileURLToPath(new URL('./core_bridge.py', import.meta.url))
+/** Durable terminal turn reasons accepted from a native child Session. */
+const TERMINAL_REASONS = ['completed', 'aborted', 'error', 'max-tokens', 'blocked', 'interrupted']
 
 /** Fail-closed runtime error carrying the machine code, recovery text and offending field. */
 function runtimeError(code, field, detail) {
@@ -281,6 +284,17 @@ export function apply(ctx, config) {
       return response.result
     } finally { clearTimeout(timer); if (command) { command.terminate(); await command.waitForExit() } }
   }
+  /** A short failure code for UNKNOWN reasons: never a payload, path or stack. */
+  const failureCode = error => typeof error?.code === 'string' ? error.code : String(error?.message ?? error).split(/[\s:]/)[0] || 'UNKNOWN_ERROR'
+  function realDirectory(path) {
+    try { return realpathSync(path) } catch { return undefined }
+  }
+  /**
+   * Native catalog correlation plus durable terminal Session evidence. Missing or unreadable
+   * native state (child Session file, working directory) is UNKNOWN with a reason; an identity
+   * conflict throws. A crash reservation must stay diagnosable, so observation never invents a
+   * terminal outcome and never fails on an unreadable child.
+   */
   async function nativeObservation(agent, reservation, signal, cancel) {
     const own = agent.session.snapshotEvents().filter(event => event.type === 'subagent/catalog' && event.data.label === reservation.correlation)
     const ids = [...new Set(own.map(event => event.data.childId))]
@@ -294,16 +308,21 @@ export function apply(ctx, config) {
       await live.whenIdle()
       await ctx.sessionPersistence.flush()
     }
-    const handle = await ctx.sessionPersistence.open(id, 'read', { signal })
+    const unreadable = error => { signal?.throwIfAborted(); return { child_id: id, outcome: 'UNKNOWN', reason: `native child Session unreadable (${failureCode(error)})` } }
+    let handle
+    try { handle = await ctx.sessionPersistence.open(id, 'read', { signal }) } catch (error) { return unreadable(error) }
     try {
-      if (handle.header.parentSession !== agent.id || handle.header.isSeeded !== false || handle.header.origin !== 'subagent'
-        || realpathSync(handle.header.cwd) !== realpathSync(agent.session.header.cwd)) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
-      const { events } = await handle.read(0, undefined, { signal })
+      if (handle.header.parentSession !== agent.id || handle.header.isSeeded !== false || handle.header.origin !== 'subagent') throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      const childCwd = realDirectory(handle.header.cwd), rootCwd = realDirectory(agent.session.header.cwd)
+      if (!childCwd || !rootCwd) return { child_id: id, outcome: 'UNKNOWN', reason: 'native child or root working directory unavailable' }
+      if (childCwd !== rootCwd) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      let events
+      try { ({ events } = await handle.read(0, undefined, { signal })) } catch (error) { return unreadable(error) }
       const start = events.filter(event => event.type === 'turn/start').at(-1)
       const end = events.filter(event => event.type === 'turn/end').at(-1)
-      if (!start || !end || end.seq < start.seq || !['completed', 'aborted', 'error', 'max-tokens', 'blocked', 'interrupted'].includes(end.data.reason.kind)) return { child_id: id, outcome: 'UNKNOWN', reason: 'durable native terminal reason unavailable' }
+      if (!start || !end || end.seq < start.seq || !TERMINAL_REASONS.includes(end.data?.reason?.kind)) return { child_id: id, outcome: 'UNKNOWN', reason: 'durable native terminal reason unavailable' }
       return { child_id: id, outcome: end.data.reason.kind, terminal_seq: end.seq, terminal_reason: end.data.reason, provenance: 'native-session-turn/end' }
-    } finally { await handle.close() }
+    } finally { try { await handle.close() } catch { /* a read-only handle; the observation above stands */ } }
   }
 
   // Persistent Agent Preset registration. The definition activates eagerly in the host
@@ -390,8 +409,13 @@ export function apply(ctx, config) {
     },
     diagnostics: async (sessionId, taskId, signal) => withNativeRoot(sessionId, signal, async agent => {
       const task = await bridge(agent, 'inspect', { task_id: taskId }, signal)
-      return { task, workspace: await binding(agent), configurationRevision: ctx.get('settings')?.describe({ redactSecrets: true }).find(row => row.ns === ctx.get('configEditor')?.entries().find(entry => entry.fiber?.runtime?.name === name)?.options.id)?.revision ?? null, permissions: { memory: readPolicy(config).memory, roles: readPolicy(config).roles.map(({ id, enabled, tools, memory, context, modelPolicy }) => ({ id, enabled, tools, memory, context, modelPolicy })) },
-        providers: ctx.get('thalirisMemory')?.list() ?? [], reservations: await Promise.all(task.state.active_work.map(async value => ({ reservation: JSON.parse(value), native: await nativeObservation(agent, JSON.parse(value), signal, false) }))) }
+      return { task, workspace: await binding(agent, { autoBind: false }), configurationRevision: ctx.get('settings')?.describe({ redactSecrets: true }).find(row => row.ns === ctx.get('configEditor')?.entries().find(entry => entry.fiber?.runtime?.name === name)?.options.id)?.revision ?? null, permissions: { memory: readPolicy(config).memory, roles: readPolicy(config).roles.map(({ id, enabled, tools, memory, context, modelPolicy }) => ({ id, enabled, tools, memory, context, modelPolicy })) },
+        providers: ctx.get('thalirisMemory')?.list() ?? [], reservations: await Promise.all(task.state.active_work.map(async value => {
+          // One unreadable reservation is reported as UNKNOWN; it never fails the whole diagnostics read.
+          let reservation
+          try { reservation = JSON.parse(value) } catch { return { reservation: value, native: { outcome: 'UNKNOWN', reason: 'reservation is not adapter JSON' } } }
+          return { reservation, native: await nativeObservation(agent, reservation ?? {}, signal, false).catch(error => { signal?.throwIfAborted(); return { outcome: 'UNKNOWN', reason: `native observation failed (${failureCode(error)})` } }) }
+        })) }
     }),
     approveMemory: async (sessionId, taskId, proposalId, signal) => withNativeRoot(sessionId, signal, async agent => {
       const bound = await binding(agent), policy = readPolicy(config)

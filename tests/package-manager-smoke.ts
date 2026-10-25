@@ -279,8 +279,8 @@ try {
     'thaliris_memory_propose', 'thaliris_memory_read', 'thaliris_memory_search', 'thaliris_observe', 'thaliris_reconcile',
     'thaliris_task_close', 'thaliris_task_context', 'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge',
     'thaliris_task_identity_note', 'thaliris_task_identity_relate', 'thaliris_task_identity_suggest', 'thaliris_task_inspect', 'thaliris_task_judge', 'thaliris_task_mode',
-    'thaliris_task_register', 'thaliris_task_start', 'thaliris_task_status', 'thaliris_workstream',
-  ], 'the installed preset child registers the 16 Controller, 3 memory and dispatch-granted evidence tools')
+    'thaliris_task_recover', 'thaliris_task_register', 'thaliris_task_start', 'thaliris_task_status', 'thaliris_workstream',
+  ], 'the installed preset child registers the 17 Controller, 3 memory and dispatch-granted evidence tools')
 
   stage = 'activate API and optional memory'
   await setPluginEnabled('@thaliris/dsh-plugin/api', true)

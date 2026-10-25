@@ -1,12 +1,12 @@
 {
   "repository": "Iris0fTheValley/Thaliris",
-  "commit": "fc170edddbc41ce09aba57d3cf30d9a50344c570",
-  "version": "0.5.2",
+  "commit": "f0ee56320a7e3d8bcd04ca9369804af66851fee9",
+  "version": "0.5.3",
   "state_schema_version": 7,
   "source": {
     "kind": "codeload-tarball",
     "url_template": "https://codeload.github.com/{repository}/tar.gz/{commit}",
-    "sha256": "7c84adefaf2f543ca1428a2a75db614dd2ac743b00d0e73325c32975a3c09607"
+    "sha256": "1dd3d5581c13928973e7471cc3aec3edc22f57c8347cec8aa9849735857526f4"
   },
-  "package_tree_sha256": "7755d69909fe7bcb9403e6f83fdc97229043469cfd8979e1b96d7011cc71cf28"
+  "package_tree_sha256": "3c380cf6ff0854b2fea954f6cefc18c220567ff1ed1b9376d7bb664e7b5a3bb6"
 }

@@ -136,7 +136,7 @@ async function harness(home: string, initialize: boolean, resumeRoot = true, opt
   assert.equal(ctx.tools.get('thaliris_task_start'), undefined, 'the global tool view carries no preset-scoped tool')
   if (parent) {
     assert.ok(ctx.tools.get('thaliris_task_start', parent), 'the preset-selected session resolves the Controller tools')
-    assert.equal(ctx.tools.schemas(parent).filter(tool => tool.name.startsWith('thaliris_')).length, 20, '16 Controller + 3 memory + dispatch-granted evidence tools are preset-scoped')
+    assert.equal(ctx.tools.schemas(parent).filter(tool => tool.name.startsWith('thaliris_')).length, 21, '17 Controller + 3 memory + dispatch-granted evidence tools are preset-scoped')
   }
   await ctx.sessionPersistence.flush()
   let call = 0

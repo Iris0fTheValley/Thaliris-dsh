@@ -1,6 +1,7 @@
 // Emitted semantic contracts, the host/preset split and native policy preservation; no online model.
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
+import { validDisposeReason } from '../dispose-reason.mjs'
 import { roleNativeTools, roleTemplates } from '../role-templates.mjs'
 import { STANDARD_COMPOSITION, THALIRIS_AGENT_ROW, THALIRIS_PRESET_ID, THALIRIS_PRESET_NAME, THALIRIS_PRESET_ORDER, thalirisPresetDefinition } from '../composition.mjs'
 
@@ -105,7 +106,7 @@ assert.ok(!/export function apply\(ctx[^)]*\)\s*{[^}]*realpathSync\(config/.test
 assert.equal(json('../package.json').exports['./preset'], './preset.mjs')
 const toolNames = preset.match(/export const TOOL_NAMES = Object\.freeze\(\[([^\]]+)\]/s)[1]
 const nameCount = [...toolNames.matchAll(/'([a-z_]+)'/g)].length
-assert.equal(nameCount, 16)
+assert.equal(nameCount, 17)
 for (const name of ['thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
   'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate',
   'thaliris_task_identity_note', 'thaliris_task_identity_suggest']) assert.ok(toolNames.includes(`'${name}'`), name)
@@ -156,7 +157,7 @@ assert.ok(existsSync(new URL('./composition-drift.mjs', import.meta.url)), 'the 
 
 // --- First-run setup: host plane only, pinned source, human Gateway surface ------------
 assert.ok(pkg.files.includes('setup.mjs'), 'the host-plane setup module ships in the package')
-assert.equal(lock.version, '0.5.2')
+assert.equal(lock.version, '0.5.3')
 assert.match(lock.commit, /^[0-9a-f]{40}$/)
 assert.equal(lock.source.kind, 'codeload-tarball')
 assert.match(lock.source.sha256, /^[0-9a-f]{64}$/)
@@ -190,7 +191,18 @@ for (const name of ['setupStatus', 'prepareRuntime', 'recheckRuntime']) {
   assert.ok(!toolNames.includes(name), `${name} is not a registered tool name`)
 }
 assert.ok(!global.includes('ctx.tools.register('), 'the global row still registers no tool')
-console.log('DSH prompt contracts, host/preset split, generated bundle, preset declaration and native role grants verified')
+// --- Session continuity (0.5.3 line): dispose reason, dispose/recover/attach contracts ---
+for (const bad of [undefined, null, 1, '', ' \n\t', 'x'.repeat(3501)]) assert.equal(validDisposeReason(bad), false)
+assert.ok(validDisposeReason('lost') && validDisposeReason('x'.repeat(3500)))
+assert.ok(preset.indexOf('validDisposeReason(args.reason)') < preset.indexOf('await reconcile(agent, args, signal)'), 'dispose reason is validated before any cancel')
+assert.ok(toolNames.includes("'thaliris_task_recover'"), 'the Controller recover tool is registered')
+assert.ok(preset.includes('register(TOOL_NAMES[16]'))
+assert.ok(preset.includes("bridge(agent, 'recover'") && preset.includes("bridge(agent, 'attach'"))
+assert.ok(preset.includes("bridge(agent, 'dispose'"))
+assert.ok(preset.includes('async function disposeLiveness('))
+assert.ok(preset.includes('RESTORE_RETRY_MS') && preset.includes('function resumeNotice('), 'restore failures stay visible')
+assert.ok(global.includes('TERMINAL_REASONS') && global.includes('async function nativeObservation('))
+console.log('DSH prompt contracts, host/preset split, generated bundle, preset declaration, native role grants and session-continuity contracts verified')
 
 /** True when the global module validates runtime paths during activation (it must not). */
 function indexThrowsOnActivation(source) {
