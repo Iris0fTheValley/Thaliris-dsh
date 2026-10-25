@@ -66,7 +66,13 @@ TERMINAL_PROVENANCE = frozenset({"native-run-result", "native-session-turn/end"}
 ARCHIVE_PREFIX = "Archived reservation: "
 LEGACY_PREFIXES = (ARCHIVE_PREFIX, "Controller close decision: ")
 # Core's record-count and state-size bounds; any other refusal stays an error.
+# Core 0.5.3 marks capacity refusals with TASK_STATE_CAPACITY_EXCEEDED; the plain-text messages cover older Core.
+CORE_CAPACITY_CODE = "TASK_STATE_CAPACITY_EXCEEDED"
 CORE_CAPACITY_ERRORS = frozenset({"state list exceeds limit", "invalid task records", "task state exceeds 512 KiB"})
+
+
+def is_core_capacity_error(error: ValueError) -> bool:
+    return getattr(error, "code", None) == CORE_CAPACITY_CODE or str(error) in CORE_CAPACITY_ERRORS
 
 
 def validate_authority_directory(root: Path, directory: Path) -> None:
@@ -656,7 +662,7 @@ def write(core, root: Path, actor: str, state: dict, partial: dict, additions: l
     try:
         result = update(core, root, actor, state["revision"], full)
     except ValueError as error:
-        if not built or str(error) not in CORE_CAPACITY_ERRORS:
+        if not built or not is_core_capacity_error(error):
             raise
         result = update(core, root, actor, state["revision"], partial)
         return {**result, "adapter_records": [], "unrecorded_reason": "CORE_RECORD_CAPACITY: " + str(error),

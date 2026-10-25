@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.3。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.3、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.3。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -209,7 +209,7 @@ thaliris-core --root . --task-id "$TASK_ID" task-status
 
 ## DSH 原生集成
 
-@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.2，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
+@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.3，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
 
 DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不授予工具且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
 
