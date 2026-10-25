@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
+import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import Storage from '@deepseek-ai/dsh-storage'
@@ -16,16 +18,24 @@ import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import Subagents from '@deepseek-ai/dsh-subagent'
 import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as Fork from '@deepseek-ai/dsh-subagent-fork-in-process'
+import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SubagentRunInfo } from '@deepseek-ai/dsh-subagent'
+import { executeCalls } from './scripted-execute.ts'
 
 const upstream = process.env.DSH_SOURCE!
 const helpers = await import(pathToFileURL(join(upstream, 'packages/core/agent-loop/tests/mock-adapter.ts')).href)
 const { MockAdapter, textResponse, toolCallResponse, maxTokensResponse } = helpers
 const pluginUrl = new URL('../index.mjs', import.meta.url).href
+const presetToolsUrl = new URL('./fixtures/preset-tools.mjs', import.meta.url).href
+/** Live and persisted point reads for DSH cold resume; search is not part of these fixtures. */
+class FixtureSessionQuery extends SessionQueryEngine {
+  override searchSessions(): Promise<never> { return Promise.reject(new Error('session search is not configured in this fixture')) }
+  override searchEvents(): Promise<never> { return Promise.reject(new Error('event search is not configured in this fixture')) }
+}
 const corePath = process.env.THALIRIS_CORE_PATH!
 const names = ['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
   'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
@@ -41,7 +51,8 @@ async function taskStatePath(root: string, taskId: string) {
   return join(root, '.context', 'tasks', taskId, 'state.json')
 }
 
-async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
+/** `parentPreset` composes the Controller from a native Agent preset carrying `presetTools`, as DSH's bundled presets carry file and shell tools. */
+async function setup(script: any[], provider = 'spawn', inheritRoute = false, options: { parentPreset?: boolean, roleTools?: string[], presets?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'thaliris-dsh-native-'))
   const workspace = join(directory, 'workspace')
   await mkdir(workspace)
@@ -60,15 +71,23 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
   await ctx.plugin(Fork, { providerName: 'fork' })
   await ctx.plugin(LocalSubprocess)
   await ctx.plugin(Loader)
+  await ctx.plugin(FixtureSessionQuery)
+  if (options.presets !== false) {
+    await ctx.plugin(AgentPresets, { default: 'coding' })
+    await ctx.agentPresets.register({ id: 'coding', plugins: [{ name: presetToolsUrl, config: { tools: ['preset_role_tool', 'preset_unselected_tool'] } }] })
+  }
   ctx.tools.register({ name: 'unselected_fixture_tool', description: 'Ambient test capability excluded from child allowlist.', parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: { schema: { type: 'object', additionalProperties: true }, render: () => [{ type: 'text', text: 'fixture' }] }, execute: async () => ({ fixture: true }) })
   const mock = new MockAdapter(script)
   ctx.llm.registerAdapter(['mock'], mock)
-  const parent = await ctx.agentLoop.create(SessionId('native-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
+  const parent = options.parentPreset
+    ? (await ctx.agents.create({ sessionId: SessionId('native-controller'), meta: { cwd: workspace, agentPreset: 'coding' }, agentOptions: { provider: 'mock', model: 'parent' },
+      setup: async agentCtx => { await ctx.agentPresets.mount(agentCtx, 'coding') } })).agent
+    : await ctx.agentLoop.create(SessionId('native-controller'), { provider: 'mock', model: 'parent' }, { cwd: workspace })
   await ctx.sessionPersistence.flush()
   const config = { root: workspace, pythonExecutable: process.env.THALIRIS_TEST_PYTHON, corePath,
     authorityDirectory: join(directory, 'authority'), subagentProvider: provider,
-    policy: { workspaces: [{ workspaceId: nativeWorkspace.id, root: workspace, enabled: true }], roles: [{ id: 'Implementer', name: 'Implementer', description: 'Editable fixture', enabled: true, tools: [],
+    policy: { workspaces: [{ workspaceId: nativeWorkspace.id, root: workspace, enabled: true }], roles: [{ id: 'Implementer', name: 'Implementer', description: 'Editable fixture', enabled: true, tools: options.roleTools ?? [],
       modelPolicy: inheritRoute ? { mode: 'inherit', routes: [] } : { mode: 'fixed', routes: [{ provider: 'mock', model: 'selected-child' }] }, prompt: 'EDITED_ROLE_PROMPT Execute only the selected bounded handoff.' }] } }
   const entryId = await ctx.loader.create({ name: pluginUrl, config })
   const entry = ctx.loader.resolve(entryId)
@@ -97,7 +116,7 @@ async function setup(script: any[], provider = 'spawn', inheritRoute = false) {
     authority: await readFile(await authorityPath(taskId)),
   })
   // One standalone call through the native batch executor; the single settled result is returned.
-  const execute = async (name: string, args: any, agent: Agent | undefined = parent) => (await ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId(`call-${++call}`), name, arguments: JSON.stringify(args) }], ...(agent ? { agent } : {}), signal: signal() })).results[0]!.result as any
+  const execute = async (name: string, args: any, agent: Agent | undefined = parent) => (await executeCalls(ctx, { calls: [{ type: 'tool-call', id: ToolCallId(`call-${++call}`), name, arguments: JSON.stringify(args) }], ...(agent ? { agent } : {}), signal: signal() })).results[0]!.result as any
   const clean = async () => {
     await ctx.fiber.dispose()
     await rm(directory, { recursive: true, force: true })
@@ -468,7 +487,74 @@ async function evidenceContextAndMode() {
   } finally { await fixture.clean() }
 }
 
+
+/** A finished Thaliris child cannot be continued through DSH, with the adapter loaded, unloaded or reloaded. */
+async function nonResumableChild() {
+  const childRequests: { tools: string[], text: string }[] = []
+  const child = (answer: string) => (options: any) => { childRequests.push({ tools: (options.tools ?? []).map((tool: any) => tool.name), text: JSON.stringify(options.messages) }); return textResponse(answer) }
+  const fixture = await setup([child('answer 42'), child('supplemental evidence read')], 'spawn', false, { parentPreset: true, roleTools: ['preset_role_tool'] })
+  const { ctx, parent } = fixture
+  try {
+    const started: any = await fixture.execute(names[0]!, { goal: 'Non-resumable child', contract: selectedContract })
+    // During its dispatch the Controller may send the running child supplemental evidence
+    // through DSH send_message; delivery adds a message and never recomposes the child.
+    const supplemental: Promise<unknown>[] = []
+    ctx.on('subagent/start', (info: SubagentRunInfo) => {
+      supplemental.push(ctx.subagents.sendMessage(parent, info.id, [{ type: 'text', text: 'SUPPLEMENTAL_EVIDENCE_SENTINEL' }], { signal: signal() }))
+    })
+    const result: any = await fixture.execute(names[2]!, { task_id: started.value.task_id, base_revision: started.value.revision, workstream: 'one-shot', role: 'Implementer', handoff })
+    assert.equal(result.isError, false, JSON.stringify(result))
+    await Promise.all(supplemental)
+    assert.equal(supplemental.length, 1)
+    const childId = SessionId(result.value.child_id)
+    assert.ok(childRequests.length >= 1 && childRequests.some(request => request.text.includes('SUPPLEMENTAL_EVIDENCE_SENTINEL')), 'the mid-dispatch message reaches the child')
+    for (const request of childRequests) assert.deepEqual(request.tools, ['preset_role_tool'], 'the child joins the parent preset and keeps exactly its role allowlist, including after a mid-dispatch message')
+    assert.deepEqual(ctx.tools.schemas(parent).map(tool => tool.name).filter(name => name.startsWith('preset_')).sort(), ['preset_role_tool', 'preset_unselected_tool'])
+    assert.equal(ctx.agents.get(childId), undefined)
+    const handle = await ctx.sessionPersistence.open(childId, 'read')
+    let events: any[]
+    try { events = [...(await handle.read()).events] } finally { await handle.close() }
+    const own = events.slice(handle.inheritedEventCount)
+    const selected = own.findIndex(event => event.type === 'agent-preset/selected'), descriptor = own.findIndex(event => event.type === 'subagent/descriptor')
+    assert.ok(selected >= 0 && selected < descriptor, 'DSH records the gate as the independent selection its cold resume restores')
+    assert.equal(own[selected].data.agentPreset, `thaliris-dispatch-${childId}`)
+    assert.equal(own[descriptor].data.mode, 'continuable')
+    assert.match(own[descriptor].data.label, /^thaliris:/)
+    assert.deepEqual((await ctx.agentPresets.list()).map(preset => preset.id), ['coding'], 'the gate exists only while its dispatch runs')
+    const requests = fixture.mock.requests.length
+    const refused = (error: any) => error?.code === 'NOT_RESUMABLE' && error.cause?.code === 'agent-preset/not-found'
+    const refuse = async (state: string) => {
+      // The model-facing continuation (send_message) and the host/UI prompt route both cold-resume through DSH.
+      await assert.rejects(ctx.subagents.sendMessage(parent, childId, [{ type: 'text', text: `continue (${state})` }], { signal: signal() }), refused, state)
+      await assert.rejects(queueHostSubagentPrompt(ctx.subagents, parent, childId, [{ type: 'text', text: `continue from UI (${state})` }], { kind: 'user' }, signal()), refused, state)
+      assert.equal(ctx.agents.get(childId), undefined, `a refused continuation leaves no live child (${state})`)
+      assert.equal(fixture.mock.requests.length, requests, `a refused continuation runs no model step (${state})`)
+    }
+    await refuse('adapter loaded')
+    await ctx.loader.update(fixture.entry.id, { disabled: true })
+    await ctx.loader.await()
+    for (const name of names) assert.equal(ctx.tools.get(name), undefined)
+    await refuse('adapter unloaded')
+    await ctx.loader.update(fixture.entry.id, { disabled: false })
+    await ctx.loader.await()
+    await refuse('adapter reloaded')
+    console.log('PASS dispatched child joins the parent preset with its exact allowlist, unchanged by a mid-dispatch Controller message; DSH refuses to continue it after dispatch with the adapter loaded, unloaded or reloaded')
+  } finally { await fixture.clean() }
+
+  const ungated = await setup([], 'spawn', false, { presets: false })
+  try {
+    const started: any = await ungated.execute(names[0]!, { goal: 'No resume gate', contract: selectedContract })
+    const result: any = await ungated.execute(names[2]!, { task_id: started.value.task_id, base_revision: started.value.revision, workstream: 'ungated', role: 'Implementer', handoff })
+    assert.equal(result.isError, true)
+    assert.match(JSON.stringify(result.content), /THALIRIS_CHILD_RESUME_GATE_UNAVAILABLE/)
+    assert.equal(ungated.mock.requests.length, 0)
+    assert.equal((await ungated.state(started.value.task_id)).revision, started.value.revision, 'refused before any reservation')
+    console.log('PASS without native Agent presets the dispatch fails closed before reserving or starting a child')
+  } finally { await ungated.clean() }
+}
+
 await closedLoop()
 await evidenceContextAndMode()
 await failureAndBoundary()
 await unloadActiveChild()
+await nonResumableChild()

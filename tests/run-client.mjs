@@ -3,14 +3,12 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertDshSource } from '../dsh-compat.mjs'
 
 const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = process.env.DSH_SOURCE
-if (!source) throw new Error('Set DSH_SOURCE to the pinned DSH source checkout.')
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== '22ddee3792402c3e70ec5f86a63c3e3e895a2f60') {
-  throw new Error('DSH source revision differs from the verified client baseline.')
-}
+const host = assertDshSource(source, 'shared client tests')
+console.log(`DSH client footprint: ${host.version} (${host.revision}) inside ${host.range}`)
 
 // Vitest admits workspace-local tests only. Copy this product package into a
 // temporary workspace slot so the actual DSH aliases, CSS handling, and jsdom

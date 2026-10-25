@@ -18,7 +18,7 @@ Thaliris builds on the native Agent capabilities of Hosts such as Codex, DeepSee
 
 > **Status: Beta.** Real refactoring work has shown an implementer dispatching an investigation, a Controller starting an independent review, and counterevidence driving repairs. The sample is too small to establish a general quality or cost advantage. See [empirical observations](#empirical-observations).
 >
-> **Versions:** this document describes the source versions on each repository's `main` branch: Core 0.5.2, Codex adapter 0.5.2, Claude Code plugin 0.4.2 and DSH plugin 0.4.0. Version numbers describe source, not an installation on a given machine; updated files in a repository or on disk do not prove that a running Host has loaded the new version.
+> **Versions:** this document describes the source versions on each repository's `main` branch: Core 0.5.2, Codex adapter 0.5.2, Claude Code plugin 0.4.2 and DSH plugin 0.4.1. Version numbers describe source, not an installation on a given machine; updated files in a repository or on disk do not prove that a running Host has loaded the new version.
 
 ## Why more than context management
 
@@ -238,11 +238,11 @@ Memory is an independent optional capability and is disabled by default. The mem
 
 ## Installation and configuration
 
-Building requires Node.js 24.9+ (matching upstream DSH `master` `engines`); running Core requires Python 3.11+. DSH plugin 0.4.0 supports upstream DSH `master` only (`22ddee3`, packages at `0.2.1-rc.3`); for earlier DSH such as `dsh-v0.2.1-alpha.1` use DSH plugin 0.3.2. Build local archives from a compatible DSH/Core pair; the current pairing and version provenance are in [Core baseline](CORE-BASELINE.md). Build the bundle patch and shared Web/Desktop client, then pack the repository and each optional Memory component:
+Building requires Node.js 24.9+ (matching upstream DSH `master` `engines`); running Core requires Python 3.11+. DSH plugin 0.4.1 declares an interface range, `>=0.2.1-rc.2 <0.2.2-0`, in `engines.dsh`; it admits the released `0.2.1-rc.2` and `0.2.1-rc.3` lines without an exact-version exemption or a pinned revision. For earlier DSH such as `dsh-v0.2.1-alpha.1` use DSH plugin 0.3.2. Build local archives from a compatible DSH/Core pair; the current pairing and version provenance are in [Core baseline](CORE-BASELINE.md). Build the bundle patch and shared Web/Desktop client, then pack the repository and each optional Memory component:
 
 ~~~sh
 npm run build:bundle
-DSH_SOURCE="/path/to/pinned-dsh-checkout" npm run build:client
+DSH_SOURCE="/path/to/compatible-dsh-checkout" npm run build:client
 npm pack
 ~~~
 
@@ -251,7 +251,7 @@ Install the main plugin archive through the DSH Plugin Manager. Add both optiona
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.4.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.2.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.4.1.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.2.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.2.0.tgz"
 ~~~
 
 The generated bundle disables runtime/API by default. Before enabling it, configure absolute pythonExecutable, corePath and authorityDirectory values; corePath must point to Core installed in the same Python environment, and authorityDirectory must stay outside the governed Workspace. Then register the canonical Git root as a native DSH Workspace, create or resume its persistent root Session, and bind the exact Workspace ID and root in policy. Do not store credentials in plugin configuration.

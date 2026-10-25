@@ -6,8 +6,8 @@ on:
 permissions:
   contents: read
 env:
-  # The verified DSH native API baseline (upstream master, packages 0.2.1-rc.3); see CORE-BASELINE.md.
-  DSH_REVISION: 22ddee3792402c3e70ec5f86a63c3e3e895a2f60
+  # The plugin declares an interface range (>=0.2.1-rc.2 <0.2.2-0), not a DSH
+  # revision. The native job runs one checkout per verified release tag below.
   DSH_TELEMETRY_DISABLED: '1'
 jobs:
   pairing:
@@ -77,6 +77,13 @@ jobs:
   dsh-native:
     needs: pairing
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One verified interface-compatible release per row, selected by tag so
+        # the gate never depends on a committed revision hash.
+        dsh-tag: [dsh-v0.2.1-rc.2, dsh-v0.2.1-rc.3]
+    name: native ${{ matrix.dsh-tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,12 +93,13 @@ jobs:
           repository: Iris0fTheValley/Thaliris
           path: shared-core
           ref: ${{ needs.pairing.outputs.commit }}
-      # Exactly the pinned DSH source; never a newer release.
+      # A checkout of one verified release; the plugin admits any 0.2.1 source
+      # inside its engines.dsh range, so the tag is evidence rather than a pin.
       - uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
           path: dsh-src
-          ref: ${{ env.DSH_REVISION }}
+          ref: ${{ matrix.dsh-tag }}
           persist-credentials: false
       - name: Selected DSH identity
         run: 'git -C dsh-src show -s --format="DSH commit: %H%nSubject: %s" HEAD'
@@ -105,15 +113,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install pinned DSH dependencies
+      - name: Install DSH dependencies
         working-directory: dsh-src
         run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       # The linux-x64 system addon (flock) is not shipped in the source tree;
-      # build it exactly as the pinned DSH tree defines (host addon only).
-      - name: Build pinned DSH host system addon
+      # build it exactly as the checked-out DSH tree defines (host addon only).
+      - name: Build DSH host system addon
         working-directory: dsh-src
         run: pnpm build:native-system
       - name: Native composition (scripted model)

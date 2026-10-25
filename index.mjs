@@ -80,11 +80,20 @@ export function apply(ctx, config) {
   // Dispatch-time child composition keyed by the reserved native child id: the role
   // persona and the exact tool grant, installed on the child's own scope exactly as
   // DSH formerly applied a per-request persona and toolFilter.
-  const compositions = new Map()
-  ctx.on('agent/created', ({ agent: created, source }) => {
+  const compositions = new Map(), gates = new Set()
+  ctx.on('agent/created', async ({ agent: created, source }) => {
     const composition = compositions.get(created.id)
     if (composition) {
+      const { presets } = composition
       if (created.session.header.parentSession !== composition.parent.id) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      // DSH recorded the per-dispatch gate as this child's independent preset selection,
+      // so its own cold resume mounts only that gate and refuses once it is unregistered.
+      // Read the recorded event rather than a versioned reader method: the same session-log
+      // record is the interface DSH cold resume restores in every compatible 0.2.1 release.
+      if (!created.session.snapshotEvents().some(event => event.type === 'agent-preset/selected' && event.data?.agentPreset === composition.gate)) throw new Error('THALIRIS_CHILD_RESUME_GATE_REQUIRED')
+      // The gate composes nothing: the dispatched child joins the parent's preset as before.
+      if (composition.parentPreset !== undefined) await presets.recompose(created.ctx, composition.parentPreset)
+      if (presets.composedPreset(created.ctx) !== (composition.parentPreset ?? composition.gate)) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
       created.ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: created.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'), text: composition.persona })
       created.ctx.tools.restrict(composition.toolFilter)
       composition.applied++
@@ -266,6 +275,13 @@ export function apply(ctx, config) {
     if (!role.context.handoff) throw new Error('THALIRIS_ROLE_HANDOFF_DENIED')
     const provider = ctx.subagents.getProvider(config.subagentProvider)
     if (!provider || provider.inheritsParentContext !== false) throw new Error('THALIRIS_FRESH_PROVIDER_REQUIRED')
+    // The resume gate needs independent preset selection; without it a finished child
+    // could later be continued with the parent's composition and none of its grants.
+    // Probe the service's interface, not a package version: every compatible 0.2.1
+    // release supplies these three methods even when internal method sets differ.
+    const presets = ctx.get('agentPresets')
+    const resumeGatePort = !!presets && typeof presets.register === 'function' && typeof presets.composedPreset === 'function' && typeof presets.recompose === 'function'
+    if (!resumeGatePort || provider.capabilities?.agentPreset !== true) throw new Error('THALIRIS_CHILD_RESUME_GATE_UNAVAILABLE')
     let route
     const mode = role.modelPolicy.mode
     if (mode === 'inherit') { if (args.route) throw new Error('THALIRIS_MODEL_ROUTE_NOT_ALLOWED') }
@@ -302,12 +318,20 @@ export function apply(ctx, config) {
     // per-request persona or tool filter. The child identity is reserved here and
     // its exact dispatch-time composition is installed on the child's own scope by
     // the `agent/created` listener, before the child's first prompt assembly.
-    const childId = randomUUID()
-    const composition = { parent: agent, persona: role.prompt, toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }, applied: 0 }
+    // DSH records local children as continuable and cold-resumes them without this
+    // plugin. The child therefore selects a per-dispatch gate preset that exists only
+    // while its dispatch runs: DSH refuses to restore a child whose selected preset is
+    // missing and never falls back to the parent's composition, so once the dispatch
+    // ends (or the plugin unloads) DSH itself rejects continuing the child.
+    const childId = randomUUID(), gate = `thaliris-dispatch-${childId}`
+    const composition = { parent: agent, presets, gate, parentPreset: presets.composedPreset(agent.ctx), persona: role.prompt, toolFilter: { allow: evidence ? [...role.tools, ...EVIDENCE_TOOLS] : role.tools, deny: TOOL_NAMES }, applied: 0 }
+    let releaseGate
     compositions.set(childId, composition)
     try {
+      releaseGate = await presets.register({ id: gate, name: 'Thaliris dispatch', description: 'Internal: exists only while one Thaliris child dispatch runs, so the child cannot be continued afterwards. Not for session selection.', plugins: [] })
+      gates.add(releaseGate)
       run = await ctx.subagents.startActivation({ provider: config.subagentProvider, label: selected.correlation, childId, signal, delivery: 'caller',
-        request: { parent: agent, prompt: [{ type: 'text', text: prompt }], maxDepth: 1, ...(route ? { agentOptions: route } : {}) } })
+        request: { parent: agent, prompt: [{ type: 'text', text: prompt }], agentPreset: gate, maxDepth: 1, ...(route ? { agentOptions: route } : {}) } })
       runs.add(run)
       child = ctx.agents.get(run.childId)
       if (run.childId !== childId || composition.applied !== 1 || !child || child.session.header.parentSession !== agent.id || child.session.header.isSeeded !== false) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
@@ -329,7 +353,14 @@ export function apply(ctx, config) {
         evidence_continuity: openEvidence ?? 'UNKNOWN', output: result.output }
       if (result.stopReason !== 'completed') throw new Error('THALIRIS_NATIVE_CHILD_FAILED: ' + JSON.stringify(value))
       return value
-    } finally { reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (child) childGrants.delete(child); try { if (run) { await run.dispose(); runs.delete(run) } } finally { compositions.delete(childId) } }
+    } finally {
+      reservationBound.reject(new Error('THALIRIS_DISPATCH_ENDED')); if (child) childGrants.delete(child)
+      try { if (run) { await run.dispose(); runs.delete(run) } } finally {
+        compositions.delete(childId)
+        // Unregistering the gate is what makes DSH refuse any later continuation of this child.
+        if (releaseGate && gates.delete(releaseGate)) await releaseGate()
+      }
+    }
   })
   register(TOOL_NAMES[3], 'Controller records the mechanical DONE state after judging product completion from the task contract and available evidence.', object({ ...identitySchema, decision: string }),
     (args, agent, signal) => bridge(agent, 'close', args, signal))
@@ -485,6 +516,8 @@ export function apply(ctx, config) {
     for (const cancellation of cancellations) cancellation.abort('Thaliris plugin unloaded')
     await Promise.allSettled([...runs].map(run => run.dispose()))
     await Promise.allSettled([...operations])
-    runs.clear(); cancellations.clear(); taskContexts.clear(); restorations.clear(); compositions.clear()
+    // Dispatches interrupted by unload release their gates here: their children stay non-resumable.
+    await Promise.allSettled([...gates].map(release => release()))
+    gates.clear(); runs.clear(); cancellations.clear(); taskContexts.clear(); restorations.clear(); compositions.clear()
   })
 }

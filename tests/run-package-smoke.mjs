@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { assertDshSource } from '../dsh-compat.mjs'
 
 const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = process.env.DSH_SOURCE
@@ -12,10 +13,8 @@ if (!source || !packDirectory || !temporaryRoot || !process.env.THALIRIS_TEST_PY
   throw new Error('Set DSH_SOURCE, THALIRIS_PACK_DIR, THALIRIS_TEST_TMP_ROOT, THALIRIS_TEST_PYTHON, and THALIRIS_TEST_CORE_PATH for the packed activation smoke.')
 }
 mkdirSync(resolve(temporaryRoot), { recursive: true })
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== '22ddee3792402c3e70ec5f86a63c3e3e895a2f60') {
-  throw new Error('DSH source revision differs from the verified install baseline.')
-}
+const host = assertDshSource(source, 'packed activation smoke')
+console.log(`DSH install footprint: ${host.version} (${host.revision}) inside ${host.range}`)
 const requireSource = createRequire(resolve(source, 'package.json'))
 const temp = mkdtempSync(join(resolve(temporaryRoot), 'thaliris-plugin-manager-smoke-'))
 const tsconfig = join(temp, 'tsconfig.json')

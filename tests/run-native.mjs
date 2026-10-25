@@ -1,18 +1,19 @@
-// Source-composition runner: dependencies belong to an isolated upstream clone.
+// Source-composition runner: dependencies belong to a compatible upstream clone.
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { resolve, join } from 'node:path'
 import { existsSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { assertDshSource } from '../dsh-compat.mjs'
 
 const source = process.env.DSH_SOURCE
 const python = process.env.THALIRIS_TEST_PYTHON
 const corePath = process.env.THALIRIS_CORE_PATH
-if (!source || !python || !corePath) throw new Error('Set DSH_SOURCE (pinned clone), THALIRIS_CORE_PATH (main Core source import root), and THALIRIS_TEST_PYTHON (Python >=3.11).')
+if (!source || !python || !corePath) throw new Error('Set DSH_SOURCE (compatible clone), THALIRIS_CORE_PATH (main Core source import root), and THALIRIS_TEST_PYTHON (Python >=3.11).')
 if (!existsSync(corePath) || !existsSync(python)) throw new Error('THALIRIS_CORE_PATH and THALIRIS_TEST_PYTHON must name existing paths.')
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== '22ddee3792402c3e70ec5f86a63c3e3e895a2f60') throw new Error('DSH source revision differs from the verified API baseline')
+const host = assertDshSource(source, 'native composition')
+console.log(`DSH native footprint: ${host.version} (${host.revision}) inside ${host.range}`)
 const requireSource = createRequire(resolve(source, 'package.json'))
 const temp = mkdtempSync(join(tmpdir(), 'thaliris-dsh-runner-'))
 const tsconfig = join(temp, 'tsconfig.json')

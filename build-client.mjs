@@ -3,15 +3,13 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertDshSource } from './dsh-compat.mjs'
 
 const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)))
 const source = process.env.DSH_SOURCE
-if (!source) throw new Error('Set DSH_SOURCE to the pinned DSH source checkout.')
-const expected = '22ddee3792402c3e70ec5f86a63c3e3e895a2f60'
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' })
-if (revision.status !== 0 || revision.stdout.trim() !== expected) {
-  throw new Error(`DSH source revision must be ${expected}.`)
-}
+const host = assertDshSource(source, 'client build')
+const adapterVersion = JSON.parse(readFileSync(join(adapterRoot, 'package.json'), 'utf8')).version
+console.log(`DSH client build: ${host.version} (${host.revision}) inside ${host.range}`)
 
 const workspace = resolve(source, 'packages', 'client')
 const temporary = mkdtempSync(join(workspace, 'thaliris-build-'))
@@ -31,7 +29,7 @@ try {
   writeFileSync(join(temporary, 'tsdown.config.ts'), `import { clientBundle } from '../tsdown.client.ts'\nexport default clientBundle(import.meta.dirname, ['lib/types/index.js'])\n`)
   writeFileSync(join(temporary, 'package.json'), JSON.stringify({
     name: '@thaliris/dsh-plugin',
-    version: '0.4.0',
+    version: adapterVersion,
     type: 'module',
     dsh: { client: {
       platform: 'web',

@@ -11,6 +11,7 @@ import ConfigEditor from '@deepseek-ai/dsh-config-editor'
 import Settings from '@deepseek-ai/dsh-settings'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
 import Subagents from '@deepseek-ai/dsh-subagent'
 import * as Spawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
@@ -32,6 +33,7 @@ import RemoteAccess from '@deepseek-ai/dsh-api-remote-access'
 import { Peer } from '@deepseek-ai/dsh-client-connection'
 import Memory from '../components/memory/index.mjs'
 import * as LocalMemory from '../components/memory-local/index.mjs'
+import { executeCalls } from './scripted-execute.ts'
 const upstream = process.env.DSH_SOURCE!
 const { MockAdapter, textResponse, toolCallResponse } = await import(pathToFileURL(join(upstream, 'packages/core/agent-loop/tests/mock-adapter.ts')).href)
 const corePath = process.env.THALIRIS_CORE_PATH!
@@ -68,6 +70,8 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
     await ctx.plugin(WorkspaceRegistry)
     const first = await ctx.workspaceRegistry.create(workspace), second = await ctx.workspaceRegistry.create(secondRoot)
     await ctx.plugin(AgentLoop, { agents: [] }); await ctx.plugin(Subagents); await ctx.plugin(Spawn, { providerName: 'spawn' }); await ctx.plugin(LocalSubprocess)
+    // Thaliris dispatch requires native Agent presets for its per-dispatch resume gate.
+    await ctx.plugin(AgentPresets, { default: 'standard' })
     ctx.llm.registerAdapter(['mock'], mock)
     Object.assign(ctx.loader.builtins, { editor: ConfigEditor, settings: Settings, thaliris: Plugin })
     if (initialize) {
@@ -89,7 +93,7 @@ async function harness(home: string, initialize: boolean, resumeRoot = true) {
   await ctx.sessionPersistence.flush()
   let call = 0
   // One standalone call through the native batch executor; the single settled result is returned.
-  const execute = async (name: string, args: any, agent = parent) => (await ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId(`product-${++call}`), name, arguments: JSON.stringify(args) }], agent, signal: signal() })).results[0]!.result as any
+  const execute = async (name: string, args: any, agent = parent) => (await executeCalls(ctx, { calls: [{ type: 'tool-call', id: ToolCallId(`product-${++call}`), name, arguments: JSON.stringify(args) }], agent, signal: signal() })).results[0]!.result as any
   const view = () => ctx.settings.describe().find(row => row.ns === 'thaliris')!
   const edit = async (ops: any[], expected = view().revision) => ctx.settings.mutate('thaliris', ops, expected)
   const inspect = async (taskId: string) => { const value: any = await execute('thaliris_task_inspect', { task_id: taskId }); assert.equal(value.isError, false); return value.value }

@@ -1,6 +1,6 @@
 {
   "name": "@thaliris/dsh-plugin",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "repository": "https://github.com/Iris0fTheValley/Thaliris-dsh.git",
   "bugs": "https://github.com/Iris0fTheValley/Thaliris-dsh/issues",
@@ -17,7 +17,8 @@
     }
   },
   "engines": {
-    "node": ">=24.9.0"
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.1-rc.2 <0.2.2-0"
   },
   "files": [
     "index.mjs",
@@ -35,6 +36,7 @@
     "PROMPT-CONTRACT.md",
     "cordis.patch.yml",
     "cordis.patch.example.yml",
+    "dsh-compat.mjs",
     "build-client.mjs",
     "remote.mjs",
     "remote.d.ts",
@@ -60,18 +62,17 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-agent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-subprocess": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-subagent": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-subprocess": ">=0.2.1-rc.2 <0.2.2-0",
     "@deepseek-ai/schemastery": "3.18.5",
-    "@deepseek-ai/dsh-workspace": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-session-persistence": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-util-values": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-workspace": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.1-rc.2 <0.2.2-0",
+    "@deepseek-ai/dsh-util-values": ">=0.2.1-rc.2 <0.2.2-0"
   },
-  "dshSourceRevision": "22ddee3792402c3e70ec5f86a63c3e3e895a2f60",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
