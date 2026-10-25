@@ -133,6 +133,14 @@ jobs:
       - name: Build DSH host system addon
         working-directory: dsh-src
         run: pnpm build:native-system
+      # The packed activation smoke loads the installed plugin outside the tsx source
+      # program, so its imports need the checkout's built host artifacts (lib/*.js);
+      # source-plane tsconfig paths do not apply to those plain Node imports.
+      - name: Build DSH host artifacts for packed activation
+        working-directory: dsh-src
+        run: |
+          node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -b tsconfig.host.json
+          node ./node_modules/tsdown/dist/run.mjs --config-loader native --env.DSH_BUILD_FACE host
       # The programmatic Agent Preset must carry DSH's Standard composition;
       # this gate fails loudly when the host preset changed without a regenerated
       # composition.mjs (run per verified tag, so rc.2 and rc.3 are both checked).

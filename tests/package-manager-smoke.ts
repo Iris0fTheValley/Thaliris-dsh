@@ -67,9 +67,11 @@ const { dirname } = await import('node:path')
 const hostPackageDirectory = (name: string): string => {
   // Workspace/vendor locations are stable across linkers; prefer them over consumer resolution.
   const direct: Record<string, string> = {
+    '@deepseek-ai/cordis': 'vendor/cordis',
     '@deepseek-ai/schemastery': 'vendor/schemastery',
     '@deepseek-ai/dsh-tools': 'packages/core/tools',
     '@deepseek-ai/dsh-typert-protocol': 'packages/typert/protocol',
+    '@deepseek-ai/dsh-storage-domain': 'packages/storage/storage-domain',
   }
   const directDirectory = direct[name]
   if (directDirectory !== undefined && existsSync(join(sourceRoot, directDirectory, 'package.json'))) return resolve(sourceRoot, directDirectory)
@@ -86,7 +88,7 @@ const hostPackageDirectory = (name: string): string => {
   throw new Error(`cannot resolve host package ${name} from the DSH source checkout`)
 }
 mkdirSync(join(home, 'node_modules', '@deepseek-ai'), { recursive: true })
-for (const dependency of ['schemastery', 'dsh-tools', 'dsh-typert-protocol']) {
+for (const dependency of ['cordis', 'schemastery', 'dsh-tools', 'dsh-typert-protocol', 'dsh-storage-domain']) {
   symlinkSync(hostPackageDirectory(`@deepseek-ai/${dependency}`), join(home, 'node_modules', '@deepseek-ai', dependency), 'junction')
 }
 mkdirSync(profileDirectory, { recursive: true })
