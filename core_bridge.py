@@ -5,6 +5,7 @@ not model arguments. Direct shared-OS invocation is not authentication.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -29,7 +30,19 @@ IDENTITY_WRITE_OPERATIONS = frozenset({"identity_amend", "identity_challenge", "
 IDENTITY_FORMATION_OPERATIONS = frozenset({"identity_note", "identity_note_list", "identity_suggest"})
 IDENTITY_GET_FIELDS = frozenset({"version", "items", "amendment", "challenge"})
 IDENTITY_TRACE_FIELDS = frozenset({"direction", "depth"})
-CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"} | IDENTITY_READ_OPERATIONS | IDENTITY_WRITE_OPERATIONS
+CONTROLLER_OPERATIONS = {"inspect", "status", "begin", "bind", "finish", "reconcile", "dispose", "proposal", "approval", "close", "context", "register", "judge", "observe", "mode"} | IDENTITY_READ_OPERATIONS | IDENTITY_WRITE_OPERATIONS
+# Explicit Controller recovery of the external anchor (Core AuthorityStore.recover): CAS on
+# the anchor digest with a reason; never an automatic roll-forward or re-anchor.
+RECOVERY_OPERATIONS = frozenset({"recover", "attach"})
+STATE_CHANGED = "TASK_AUTHORITY_STATE_CHANGED"
+MISMATCH = "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"
+ROLLBACK_RECOVERY = ("the task ledger differs from its last anchored state: a write was interrupted before it was anchored, or the file was edited. "
+                     "Nothing is accepted automatically. Only as an explicit Controller decision, call thaliris_task_recover action rollback with "
+                     "details.authority_sha256 and a reason: it archives the current bytes and restores the last anchored state")
+ATTACH_RECOVERY = ("this ACTIVE task is anchored to another native root session of this workspace. Only on the user's instruction to continue it "
+                   "in this session, call thaliris_task_recover action attach with details.authority_sha256 and a reason; the previous root is refused afterwards")
+DISPOSE_LIVENESS = frozenset({"cancelled", "not-resident", "UNKNOWN"})
+RESUME_SHOWN = 4
 # Active Work and Pending Results hold only current routing state (Core bounds
 # them to 8 KiB together). Finished dispatches, consumed memory proposals and
 # legacy history move to append-only Core records with adapter provenance.
@@ -124,16 +137,22 @@ def dispatch(request: dict) -> dict:
         return resume(core, AuthorityStore, root, authority_directory, native_id, workspace_id)
     if operation in IDENTITY_FORMATION_OPERATIONS:
         return identity_formation(root, native_id, operation, args)
-    if operation not in CONTROLLER_OPERATIONS:
+    if operation not in CONTROLLER_OPERATIONS | RECOVERY_OPERATIONS:
         raise ValueError("UNSUPPORTED_BRIDGE_OPERATION")
     task_id = args.get("task_id")
     if not isinstance(task_id, str) or not task_id:
         raise ValueError("TASK_ID_REQUIRED")
     core.select_task(root, task_id)
     store = AuthorityStore(root, authority_directory, protected_paths=(".context/config.json",), task_id=task_id)
-    record = store.check()
+    if operation in RECOVERY_OPERATIONS:
+        return authority_recover(core, store, root, task_id, native_id, workspace_id, operation, args)
+    try:
+        record = store.check()
+    except ValueError as error:
+        # Only the failure text is explained; the check itself is never relaxed.
+        raise authority_failure(store, error, task_id, native_id, workspace_id) from None
     if record is None or record.get("task_id") != task_id or record.get("dsh_controller_id") != native_id or record.get("dsh_workspace_id") != workspace_id:
-        raise ValueError("DSH_CONTROLLER_MISMATCH_OR_INACTIVE")
+        raise controller_mismatch(store, record, task_id, native_id, workspace_id)
     state = core.task_show(root)["state"]
     if operation == "inspect":
         if set(args) - {"task_id", "base_revision"}:
@@ -207,6 +226,8 @@ def dispatch(request: dict) -> dict:
         store.checkpoint()
         offer = identity_offer_line(root, native_id)
         return {**result, "identity_offer": offer} if offer else result
+    if operation == "dispose":
+        return dispose(core, root, store, native_id, state, args)
     allowed = {"task_id", "base_revision", "observation"} | ({"evidence"} if operation == "begin" else set())
     if not {"task_id", "base_revision", "observation"} <= set(args) or set(args) - allowed or not isinstance(args["observation"], str) or not args["observation"].strip() or len(args["observation"]) > 3500:
         raise ValueError("INVALID_NATIVE_OBSERVATION")
@@ -365,29 +386,202 @@ def is_label(value: object, maximum: int = 64) -> bool:
     return isinstance(value, str) and 0 < len(value) <= maximum and set(value) <= LABEL_CHARACTERS
 
 
+def ledger_revisions(core, store, record: dict) -> dict:
+    """Best-effort revisions of the anchored ledger snapshot and of the current ledger bytes (None when unreadable)."""
+    def revision(content: bytes):
+        value = parse_json(content)
+        return value["revision"] if isinstance(value, dict) and type(value.get("revision")) is int else None
+    path = core._state_path(store.root, record["task_id"])
+    encoded = (record.get("snapshots") or {}).get(path.relative_to(store.root).as_posix())
+    try:
+        anchored = revision(base64.b64decode(encoded, validate=True)) if isinstance(encoded, str) else None
+    except ValueError:
+        anchored = None
+    try:
+        current = revision(path.read_bytes()) if path.is_file() else None
+    except OSError:
+        current = None
+    return {"anchored_revision": anchored, "ledger_revision": current}
+
+
+def authority_failure(store, error: ValueError, task_id: str, native_id: str, workspace_id: str) -> ValueError:
+    """Explain a TASK_AUTHORITY_STATE_CHANGED refusal to the anchored Controller (or a same-workspace root).
+
+    The text stays exactly TASK_AUTHORITY_STATE_CHANGED and nothing is accepted: Core's code,
+    the explicit recovery path and the anchor digest needed for its CAS ride along. Any
+    other failure, or an anchor of another workspace, is returned unchanged.
+    """
+    if str(error) != STATE_CHANGED:
+        return error
+    try:
+        record = store.read()
+    except (ValueError, OSError, KeyError, TypeError):
+        return error
+    if not isinstance(record, dict) or record.get("task_id") != task_id or record.get("status") != "ACTIVE" or record.get("dsh_workspace_id") != workspace_id:
+        return error
+    from thaliris import core
+    from thaliris.errors import ThalirisError
+    own = record.get("dsh_controller_id") == native_id
+    recovery = ROLLBACK_RECOVERY if own else ATTACH_RECOVERY + "; the ledger also changed, so use action attach-and-rollback, which also restores the last anchored state"
+    return ThalirisError(STATE_CHANGED, STATE_CHANGED, recovery=recovery, details={
+        "task_id": task_id, "authority_sha256": authority_digest(store), "anchored_controller": "this-session" if own else "another-root",
+        **ledger_revisions(core, store, record)})
+
+
+def controller_mismatch(store, record: dict | None, task_id: str, native_id: str, workspace_id: str) -> ValueError:
+    """The historical refusal; for an ACTIVE task of this workspace anchored to another root, also how it can be attached."""
+    if isinstance(record, dict) and record.get("task_id") == task_id and record.get("status") == "ACTIVE" \
+            and record.get("dsh_workspace_id") == workspace_id and record.get("dsh_controller_id") != native_id:
+        from thaliris.errors import ThalirisError
+        return ThalirisError("DSH_CONTROLLER_ANCHORED_ELSEWHERE", MISMATCH, recovery=ATTACH_RECOVERY,
+                             details={"task_id": task_id, "authority_sha256": authority_digest(store)})
+    return ValueError(MISMATCH)
+
+
+def authority_recover(core, store, root: Path, task_id: str, native_id: str, workspace_id: str, operation: str, args: dict) -> dict:
+    """Explicit Controller recovery of one anchor through Core's locked, archived AuthorityStore.recover.
+
+    Rollback (operation recover, or attach with rollback) archives the current ledger bytes and
+    restores the last anchored ones, which discards the one write whose caller never received a
+    confirmation; it is refused while the ledger still matches its anchor, so a healthy task is
+    never rolled back. Attach moves the single Controller anchor to this native root of the same
+    workspace; Task ID, goal, contract, mode, ledger and evidence stay. Both need a reason and the
+    anchor digest as CAS. Nothing is rolled forward or re-anchored as current.
+    """
+    from thaliris.authority import digest
+    from thaliris.errors import ThalirisError
+    fields = {"task_id", "expected_authority_sha256", "reason"} | ({"rollback"} if operation == "attach" else set())
+    reason = args.get("reason")
+    if set(args) != fields or not isinstance(args["expected_authority_sha256"], str) or not isinstance(reason, str) or not reason.strip() \
+            or len(reason) > 3500 or operation == "attach" and type(args["rollback"]) is not bool:
+        raise ValueError("INVALID_RECOVERY_ARGUMENTS")
+    rollback = operation == "recover" or args["rollback"]
+
+    def admit(record) -> None:
+        if not isinstance(record, dict) or record.get("task_id") != task_id or record.get("status") != "ACTIVE" or record.get("dsh_workspace_id") != workspace_id:
+            raise ValueError(MISMATCH)
+        if operation == "recover" and record.get("dsh_controller_id") != native_id:
+            raise ValueError(MISMATCH)
+        if operation == "attach" and record.get("dsh_controller_id") == native_id:
+            raise ValueError("DSH_CONTROLLER_ALREADY_ATTACHED")
+
+    admit(store.read())
+    state_path = core._state_path(root, task_id)
+    discarded = {}
+
+    def precondition(record: dict) -> dict:
+        # Core calls this under its lock before any archive or repository write: a refusal here changes nothing.
+        admit(record)
+        if any(digest(root / name) != expected for name, expected in record["security"].items()):
+            raise ValueError("TASK_AUTHORITY_SECURITY_CHANGED")
+        changed = digest(state_path) != record["state_sha256"]
+        if changed and not rollback:
+            raise ThalirisError(STATE_CHANGED, STATE_CHANGED, recovery="the ledger also differs from its anchored state; only if discarding that unconfirmed write is intended, use action attach-and-rollback",
+                                details={"task_id": task_id, "authority_sha256": args["expected_authority_sha256"], **ledger_revisions(core, store, record)})
+        if rollback and not changed:
+            raise ValueError("TASK_AUTHORITY_RECOVERY_NOT_REQUIRED: the ledger matches its anchored state; nothing is rolled back")
+        discarded.update(ledger_revisions(core, store, record))
+        return {}
+
+    def restore(record: dict) -> None:
+        record.setdefault("dsh_attachments", []).append({"previous_controller_id": record.get("dsh_controller_id"), "reason": reason, "rollback": rollback})
+        record["dsh_controller_id"] = native_id
+
+    store.recover(args["expected_authority_sha256"], reason, archive_paths=precondition, restore_adapter=restore if operation == "attach" else None)
+    anchor = store.read()
+    state = core.task_show(root)["state"]
+    if rollback:
+        hint = ("The unconfirmed write was archived, not applied. Repeat it only if it still applies: a dispatch whose begin was discarded is dispatched again; "
+                "a reservation that reappears is resolved with thaliris_reconcile (reconcile, or dispose with a reason).")
+    else:
+        hint = ""
+    if operation == "attach":
+        hint += (" This root is now the task's only Controller; the previous root is refused. A reservation the previous root dispatched has no native evidence "
+                 "in this session: resolve it with thaliris_reconcile action dispose and a reason.")
+    return {"ok": True, "status": "TASK_AUTHORITY_RECOVERED" if operation == "recover" else "DSH_CONTROLLER_ATTACHED", "task_id": task_id,
+            "revision": state["revision"], "rolled_back": rollback, **({"discarded_revision": discarded.get("ledger_revision")} if rollback else {}),
+            "archive": anchor["recoveries"][-1]["archive"], "authority_sha256": authority_digest(store), "active_work": len(state["active_work"]),
+            "next": hint.strip(), "task_context": task_context_text(core, state, root)}
+
+
+def dispose(core, root: Path, store, native_id: str, state: dict, args: dict) -> dict:
+    """Controller-decided release of one reservation that native evidence cannot reconcile.
+
+    The archived result is `disposed` with native outcome UNKNOWN, never completed, and keeps
+    the Controller's reason. The adapter reports the child's liveness (a child resident in
+    its process is cancelled first); outcome and provenance are supplied here. Evidence,
+    records and the rest of the task stay unchanged.
+    """
+    reason = args.get("reason")
+    if set(args) != {"task_id", "base_revision", "reason", "observation"} or not isinstance(reason, str) or not reason.strip() or len(reason) > 3500 \
+            or not isinstance(args["observation"], str) or len(args["observation"]) > 3500:
+        raise ValueError("INVALID_DISPOSE_ARGUMENTS")
+    if len(state["active_work"]) != 1:
+        raise ValueError("NATIVE_RESERVATION_REQUIRED")
+    observed = parse_json(args["observation"])
+    if not isinstance(observed, dict) or set(observed) - {"correlation", "child_id", "child_liveness", "liveness_reason"} or observed.get("child_liveness") not in DISPOSE_LIVENESS:
+        raise ValueError("DISPOSE_OBSERVATION_FIELDS: the adapter reports correlation, child_id and child_liveness; the bridge records outcome and provenance")
+    reservation = parse_json(state["active_work"][0])
+    reservation = reservation if isinstance(reservation, dict) else {}
+    child_id = observed.get("child_id") or reservation.get("child_id")
+    if observed.get("correlation") != reservation.get("correlation") or reservation.get("child_id") and child_id != reservation["child_id"]:
+        raise ValueError("NATIVE_RESERVATION_CONFLICT")
+    released = {"outcome": "disposed", "native_outcome": "UNKNOWN", "child_id": child_id, "child_liveness": observed["child_liveness"],
+                **({"liveness_reason": observed["liveness_reason"]} if "liveness_reason" in observed else {}), "reason": reason, "provenance": "controller-dispose"}
+    archive = {"operation": "dispose", "reservation": parse_json(state["active_work"][0], raw=True), "result": released}
+    result = write(core, root, native_id, state, {"active_work": []}, [(DISPATCH_KIND, compact(archive), ADAPTER_PRODUCER)])
+    result["evidence"] = core.evidence_summary(core.task_show(root)["state"])
+    store.checkpoint()
+    return {**result, "outcome": "disposed", "native_outcome": "UNKNOWN"}
+
+
 def resume(core, AuthorityStore, root: Path, authority_directory: Path, native_id: str, workspace_id: str) -> dict:
     """List this native root's ACTIVE anchored tasks with their bounded context.
 
     Restores the dynamic task-context summary after a process restart. It is
     read-only and matches the anchor's recorded DSH controller and workspace,
-    never a caller-supplied task or actor.
+    never a caller-supplied task or actor. A task of this root whose ledger
+    differs from its anchor is listed as needing recovery, not dropped; ACTIVE
+    tasks of this workspace anchored to another root are listed as attachable
+    summaries (no context). Counts report what is not shown.
     """
-    tasks, unreadable = [], 0
+    tasks, recovery, attachable, unreadable = [], [], [], 0
     directory = root / ".context" / "tasks"
     candidates = sorted(path.parent.name for path in directory.glob("*/state.json")) if directory.is_dir() else []
     for task_id in candidates[:256]:
         try:
             core.select_task(root, task_id)
             store = AuthorityStore(root, authority_directory, protected_paths=(".context/config.json",), task_id=task_id)
-            record = store.check()
-            if record is None or record.get("task_id") != task_id or record.get("dsh_controller_id") != native_id or record.get("dsh_workspace_id") != workspace_id:
+            try:
+                record = store.check()
+            except ValueError as error:
+                failure = authority_failure(store, error, task_id, native_id, workspace_id)
+                if getattr(failure, "code", None) != STATE_CHANGED:
+                    raise
+                details = failure.details
+                entry = {"task_id": task_id, "code": STATE_CHANGED, "authority_sha256": details["authority_sha256"],
+                         "anchored_revision": details["anchored_revision"], "ledger_revision": details["ledger_revision"]}
+                if details["anchored_controller"] == "this-session":
+                    recovery.append(entry)
+                else:
+                    attachable.append({**entry, "state_changed": True})
+                continue
+            if record is None or record.get("task_id") != task_id or record.get("dsh_workspace_id") != workspace_id:
+                continue
+            if record.get("dsh_controller_id") != native_id:
+                attachable.append({"task_id": task_id, "goal": record["goal"][:200], "execution_mode": record["contract"]["execution_mode"],
+                                   "authority_sha256": authority_digest(store), "state_changed": False})
                 continue
             state = core.task_show(root)["state"]
             tasks.append({"task_id": task_id, "revision": state["revision"], "execution_mode": record["contract"]["execution_mode"],
                           "task_context": task_context_text(core, state, root)})
         except (ValueError, OSError, KeyError, TypeError):
             unreadable += 1
-    return {"ok": True, "tasks": tasks[:4], "task_count": len(tasks), "unreadable_count": unreadable}
+    return {"ok": True, "tasks": tasks[:RESUME_SHOWN], "task_count": len(tasks), "truncated": len(tasks) > RESUME_SHOWN,
+            "omitted_task_ids": [task["task_id"] for task in tasks[RESUME_SHOWN:RESUME_SHOWN + 32]],
+            "recovery_required": recovery[:16], "recovery_required_count": len(recovery),
+            "attachable": attachable[:16], "attachable_count": len(attachable),
+            "unreadable_count": unreadable, "scan_limited": len(candidates) > 256}
 
 
 def parse_json(value: str, raw: bool = False):
@@ -574,7 +768,7 @@ def task_context_text(core, state: dict, root: Path | None = None, budget: int =
     if summary:
         lines.append(f"- {summary}")
     if state["active_work"]:
-        lines.append("- Active Work (unresolved native reservation; inspect or reconcile it):")
+        lines.append("- Active Work (unresolved native reservation; check, reconcile or dispose it with thaliris_reconcile):")
         lines += [f"  - {value[:300]}" for value in state["active_work"][:4]]
     if records:
         lines.append(f"- Current records ({len(records)} most recent of {total} not superseded):")

@@ -325,3 +325,238 @@ def test_correlated_binding_and_unknown_reconciliation_preserve_original(workspa
     assert archive["operation"] == "reconcile" and archive["reservation"] == {**reservation, "child_id": "native-child"}
     assert archive["result"]["outcome"] == "error"
     assert not invoke(workspace, "inspect", {"task_id": task["task_id"]}, native_workspace_id="other-workspace")["ok"]
+
+
+# Explicit Controller recovery: rollback of an unanchored write, dispose of an unresolvable
+# reservation and attach of a new root. Nothing here is automatic or widens a refusal.
+
+RESERVATION = {"correlation": "thaliris:lost", "workstream": "selected", "role": "editable", "handoff_sha256": "digest"}
+
+
+def ok(response):
+    assert response["ok"], response
+    return response["result"]
+
+
+def files(workspace, task_id):
+    return state_bytes(workspace, task_id), task_anchor_path(workspace, task_id).read_bytes()
+
+
+def anchor_digest(workspace, task_id):
+    return hashlib.sha256(task_anchor_path(workspace, task_id).read_bytes()).hexdigest()
+
+
+def unanchored(workspace, task_id, operation, arguments):
+    """Run one write, then put the previous anchor bytes back: the write landed but its checkpoint did not."""
+    anchor = task_anchor_path(workspace, task_id)
+    before = anchor.read_bytes()
+    result = ok(invoke(workspace, operation, {"task_id": task_id, **arguments}))
+    anchor.write_bytes(before)
+    return result
+
+
+def test_state_changed_is_explained_never_accepted_and_rollback_restores_the_anchor(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    begun = ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": 1, "observation": json.dumps(RESERVATION)}))
+    anchored_state = state_bytes(workspace, task_id)
+    unanchored(workspace, task_id, "finish", {"base_revision": begun["revision"], "observation": json.dumps({**RESERVATION, "child_id": "native-child", "stop_reason": "completed"})})
+    changed = files(workspace, task_id)
+
+    refused = invoke(workspace, "inspect", {"task_id": task_id})
+    assert not refused["ok"] and refused["error"] == "TASK_AUTHORITY_STATE_CHANGED" and refused["code"] == "TASK_AUTHORITY_STATE_CHANGED"
+    assert "thaliris_task_recover action rollback" in refused["recovery"]
+    assert refused["details"] == {"task_id": task_id, "authority_sha256": anchor_digest(workspace, task_id), "anchored_controller": "this-session",
+                                  "anchored_revision": 2, "ledger_revision": 3}
+    # Never accepted on its own: every operation still refuses and nothing is re-anchored.
+    for operation, arguments in (("status", {}), ("begin", {"base_revision": 3, "observation": json.dumps(RESERVATION)}), ("close", {"base_revision": 3, "decision": "done"})):
+        assert invoke(workspace, operation, {"task_id": task_id, **arguments})["error"] == "TASK_AUTHORITY_STATE_CHANGED"
+    other = invoke(workspace, "inspect", {"task_id": task_id}, native_workspace_id="other-workspace")
+    assert other["error"] == "TASK_AUTHORITY_STATE_CHANGED" and "details" not in other
+    resumed = ok(invoke(workspace, "resume", {}))
+    assert resumed["tasks"] == [] and resumed["unreadable_count"] == 0 and resumed["recovery_required_count"] == 1
+    assert resumed["recovery_required"][0]["task_id"] == task_id and resumed["recovery_required"][0]["ledger_revision"] == 3
+    assert files(workspace, task_id) == changed
+
+    digest = anchor_digest(workspace, task_id)
+    for arguments, changes, error in (
+        ({"expected_authority_sha256": digest, "reason": "Controller rollback"}, {"native_controller_id": "child-id"}, "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"),
+        ({"expected_authority_sha256": digest, "reason": "Controller rollback"}, {"native_workspace_id": "other-workspace"}, "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"),
+        ({"expected_authority_sha256": "0" * 64, "reason": "Controller rollback"}, {}, "TASK_AUTHORITY_CHANGED"),
+        ({"expected_authority_sha256": digest, "reason": " "}, {}, "INVALID_RECOVERY_ARGUMENTS"),
+        ({"expected_authority_sha256": digest}, {}, "INVALID_RECOVERY_ARGUMENTS"),
+    ):
+        denied = invoke(workspace, "recover", {"task_id": task_id, **arguments}, **changes)
+        assert not denied["ok"] and denied["error"] == error, denied
+        assert files(workspace, task_id) == changed
+
+    recovered = ok(invoke(workspace, "recover", {"task_id": task_id, "expected_authority_sha256": digest, "reason": "Bridge timed out before the finish was anchored"}))
+    assert recovered["status"] == "TASK_AUTHORITY_RECOVERED" and recovered["rolled_back"] is True
+    assert (recovered["revision"], recovered["discarded_revision"], recovered["active_work"]) == (2, 3, 1)
+    assert state_bytes(workspace, task_id) == anchored_state
+    archive = Path(recovered["archive"])
+    assert archive.is_relative_to(Path(workspace["authority_directory"])) and (archive / "authority.json").read_bytes() == changed[1]
+    assert changed[0] in [path.read_bytes() for path in archive.rglob("state.json")]
+    anchor = json.loads(task_anchor_path(workspace, task_id).read_bytes())
+    assert anchor["recoveries"][-1]["reason"] == "Bridge timed out before the finish was anchored"
+    assert (anchor["dsh_controller_id"], anchor["contract"], anchor["status"]) == ("native-root", CONTRACT, "ACTIVE")
+    # A healthy ledger is never rolled back.
+    healthy = invoke(workspace, "recover", {"task_id": task_id, "expected_authority_sha256": anchor_digest(workspace, task_id), "reason": "again"})
+    assert not healthy["ok"] and healthy["error"].startswith("TASK_AUTHORITY_RECOVERY_NOT_REQUIRED")
+    # The next legal operations succeed: the reappeared reservation is released, then the task closes.
+    finished = ok(invoke(workspace, "finish", {"task_id": task_id, "base_revision": 2, "observation": json.dumps({**RESERVATION, "child_id": "native-child", "stop_reason": "completed"})}))
+    assert finished["revision"] == 3
+    assert ok(invoke(workspace, "close", {"task_id": task_id, "base_revision": 3, "decision": "Controller accepted."}))["status"] == "DONE"
+
+
+def test_rolled_back_begin_is_dispatched_again(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    unanchored(workspace, task_id, "begin", {"base_revision": 1, "observation": json.dumps(RESERVATION)})
+    assert invoke(workspace, "inspect", {"task_id": task_id})["error"] == "TASK_AUTHORITY_STATE_CHANGED"
+    recovered = ok(invoke(workspace, "recover", {"task_id": task_id, "expected_authority_sha256": anchor_digest(workspace, task_id), "reason": "begin was never confirmed"}))
+    assert (recovered["revision"], recovered["active_work"]) == (1, 0)
+    assert ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": 1, "observation": json.dumps(RESERVATION)}))["revision"] == 2
+
+
+def test_security_change_is_not_recoverable_here(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    unanchored(workspace, task_id, "begin", {"base_revision": 1, "observation": json.dumps(RESERVATION)})
+    (Path(workspace["root"]) / ".context/config.json").write_text("{}\n")
+    before = files(workspace, task_id)
+    denied = invoke(workspace, "recover", {"task_id": task_id, "expected_authority_sha256": anchor_digest(workspace, task_id), "reason": "rollback"})
+    assert not denied["ok"] and denied["error"] == "TASK_AUTHORITY_SECURITY_CHANGED"
+    assert files(workspace, task_id) == before and (Path(workspace["root"]) / ".context/config.json").read_text() == "{}\n"
+    assert not (Path(workspace["authority_directory"]) / "recovery").exists()
+
+
+def test_dispose_releases_only_the_slot_and_never_records_completion(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    ok(invoke(workspace, "register", {"task_id": task_id, "base_revision": 1, "requirements": [{"id": "R1", "workchain_ref": "W1"}]}))
+    selected = {**RESERVATION, "evidence_handoff_id": "Hlost1"}
+    begun = ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": 2, "observation": json.dumps(selected),
+                                           "evidence": {"handoff_id": "Hlost1", "candidate": "C1", "requirement_refs": ["R1"]}}))
+    bound = ok(invoke(workspace, "bind", {"task_id": task_id, "base_revision": begun["revision"], "observation": json.dumps({**selected, "child_id": "native-child"})}))
+    ok(invoke(workspace, "observe", {"task_id": task_id, "handoff_id": "Hlost1", "child_id": "native-child", "observation": {"id": "O1", "text": "kept fact", "source_refs": ["S1"], "sources": [{"id": "S1", "kind": "local", "locator": "a.py:1", "summary": "exact"}]}}))
+    revision = ok(invoke(workspace, "inspect", {"task_id": task_id}))["state"]["revision"]
+    preserved = files(workspace, task_id)
+    liveness = {"correlation": selected["correlation"], "child_id": "native-child", "child_liveness": "not-resident"}
+    for arguments, changes, error in (
+        ({"reason": "lost", "observation": json.dumps(liveness)}, {"native_controller_id": "child-id"}, "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"),
+        ({"observation": json.dumps(liveness)}, {}, "INVALID_DISPOSE_ARGUMENTS"),
+        ({"reason": "lost", "observation": json.dumps({**liveness, "outcome": "completed"})}, {}, "DISPOSE_OBSERVATION_FIELDS"),
+        ({"reason": "lost", "observation": json.dumps({**liveness, "child_liveness": "dead"})}, {}, "DISPOSE_OBSERVATION_FIELDS"),
+        ({"reason": "lost", "observation": json.dumps({**liveness, "correlation": "thaliris:other"})}, {}, "NATIVE_RESERVATION_CONFLICT"),
+        ({"reason": "lost", "observation": json.dumps({**liveness, "child_id": "other-child"})}, {}, "NATIVE_RESERVATION_CONFLICT"),
+    ):
+        denied = invoke(workspace, "dispose", {"task_id": task_id, "base_revision": revision, **arguments}, **changes)
+        assert not denied["ok"] and denied["error"].startswith(error), denied
+        assert files(workspace, task_id) == preserved
+    stale = invoke(workspace, "dispose", {"task_id": task_id, "base_revision": revision - 1, "reason": "lost", "observation": json.dumps(liveness)})
+    assert stale["error"] == "TASK_ID_OR_REVISION_CONFLICT" and files(workspace, task_id) == preserved
+    # Without native terminal evidence reconcile still refuses to release.
+    assert not invoke(workspace, "reconcile", {"task_id": task_id, "base_revision": revision, "observation": json.dumps({**selected, "child_id": "native-child", "outcome": "completed", "provenance": "controller"})})["ok"]
+
+    disposed = ok(invoke(workspace, "dispose", {"task_id": task_id, "base_revision": revision, "reason": "Root crashed; the child Session file is gone", "observation": json.dumps(liveness)}))
+    assert (disposed["outcome"], disposed["native_outcome"], disposed["revision"]) == ("disposed", "UNKNOWN", revision + 1)
+    state = ok(invoke(workspace, "inspect", {"task_id": task_id}))["state"]
+    assert state["active_work"] == [] and state["status"] == "ACTIVE"
+    archive = json.loads(state["records"][-1]["text"])
+    assert state["records"][-1]["kind"] == "dsh-dispatch" and archive["operation"] == "dispose" and archive["reservation"] == {**selected, "child_id": "native-child"}
+    assert archive["result"] == {"outcome": "disposed", "native_outcome": "UNKNOWN", "child_id": "native-child", "child_liveness": "not-resident",
+                                 "reason": "Root crashed; the child Session file is gone", "provenance": "controller-dispose"}
+    # Evidence and its handoff stay; the dispatch counts as not completed.
+    assert [item["id"] for item in state["evidence_continuity"]["observations"]] == ["Hlost1.O1"]
+    assert [item["id"] for item in state["evidence_continuity"]["handoffs"]] == ["Hlost1"]
+    history = ok(invoke(workspace, "status", {"task_id": task_id}))["Dispatch History"]
+    assert history["count"] == 1 and history["non_completed"][0]["outcome"] == "disposed"
+    late = invoke(workspace, "observe", {"task_id": task_id, "handoff_id": "Hlost1", "child_id": "native-child", "observation": {"id": "O2", "text": "late", "source_refs": ["Hlost1.S1"]}})
+    assert not late["ok"] and "OBSERVATION_DISPATCH_FINISHED" in late["error"]
+    assert not invoke(workspace, "dispose", {"task_id": task_id, "base_revision": revision + 1, "reason": "again", "observation": json.dumps(liveness)})["ok"]
+    assert ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": revision + 1, "observation": json.dumps({**RESERVATION, "correlation": "thaliris:next"})}))["revision"] == revision + 2
+
+
+def test_unbound_reservation_without_json_is_disposable(workspace):
+    task = start(workspace)
+    begun = ok(invoke(workspace, "begin", {"task_id": task["task_id"], "base_revision": 1, "observation": "legacy reservation text"}))
+    disposed = ok(invoke(workspace, "dispose", {"task_id": task["task_id"], "base_revision": begun["revision"], "reason": "subagent start failed",
+                                                "observation": json.dumps({"child_liveness": "UNKNOWN", "liveness_reason": "no correlated child"})}))
+    assert disposed["outcome"] == "disposed"
+    assert ok(invoke(workspace, "close", {"task_id": task["task_id"], "base_revision": disposed["revision"], "decision": "Abandoned dispatch, accepted."}))["status"] == "DONE"
+
+
+def test_attach_moves_the_single_controller_anchor_and_keeps_the_task(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    ok(invoke(workspace, "context", {"task_id": task_id, "base_revision": 1, "records": [{"id": "F1", "kind": "fact", "text": "carried over"}]}))
+    begun = ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": 2, "observation": json.dumps(RESERVATION)}))
+    before = files(workspace, task_id)
+    new_root = {"native_controller_id": "new-root"}
+
+    refused = invoke(workspace, "inspect", {"task_id": task_id}, **new_root)
+    assert refused["error"] == "DSH_CONTROLLER_MISMATCH_OR_INACTIVE" and refused["code"] == "DSH_CONTROLLER_ANCHORED_ELSEWHERE"
+    digest = refused["details"]["authority_sha256"]
+    assert digest == anchor_digest(workspace, task_id) and "thaliris_task_recover action attach" in refused["recovery"]
+    listed = ok(invoke(workspace, "resume", {}, **new_root))
+    assert listed["tasks"] == [] and listed["attachable_count"] == 1
+    assert listed["attachable"] == [{"task_id": task_id, "goal": "Bounded bridge fixture", "execution_mode": "delegated", "authority_sha256": digest, "state_changed": False}]
+    assert ok(invoke(workspace, "resume", {}, native_workspace_id="other-workspace", **new_root))["attachable_count"] == 0
+
+    attach = {"task_id": task_id, "expected_authority_sha256": digest, "reason": "User continues the task in a new session", "rollback": False}
+    for arguments, changes, error in (
+        (attach, {"native_controller_id": "new-root", "native_workspace_id": "other-workspace"}, "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"),
+        (attach, {}, "DSH_CONTROLLER_ALREADY_ATTACHED"),
+        ({**attach, "expected_authority_sha256": "0" * 64}, new_root, "TASK_AUTHORITY_CHANGED"),
+        ({**attach, "rollback": True}, new_root, "TASK_AUTHORITY_RECOVERY_NOT_REQUIRED"),
+        ({**attach, "reason": ""}, new_root, "INVALID_RECOVERY_ARGUMENTS"),
+        ({key: value for key, value in attach.items() if key != "rollback"}, new_root, "INVALID_RECOVERY_ARGUMENTS"),
+    ):
+        denied = invoke(workspace, "attach", arguments, **changes)
+        assert not denied["ok"] and denied["error"].startswith(error), denied
+        assert files(workspace, task_id) == before
+
+    attached = ok(invoke(workspace, "attach", attach, **new_root))
+    assert (attached["status"], attached["rolled_back"], attached["revision"], attached["active_work"]) == ("DSH_CONTROLLER_ATTACHED", False, 3, 1)
+    assert "carried over" in attached["task_context"]
+    assert state_bytes(workspace, task_id) == before[0], "the ledger, its records and Active Work are unchanged"
+    anchor = json.loads(task_anchor_path(workspace, task_id).read_bytes())
+    previous = json.loads(before[1])
+    assert anchor["dsh_controller_id"] == "new-root" and anchor["dsh_workspace_id"] == "native-workspace"
+    assert {key: anchor[key] for key in ("task_id", "goal", "contract", "status", "state_sha256")} == {key: previous[key] for key in ("task_id", "goal", "contract", "status", "state_sha256")}
+    assert anchor["dsh_attachments"] == [{"previous_controller_id": "native-root", "reason": "User continues the task in a new session", "rollback": False}]
+    # Single Controller anchor: the previous root is refused, the new one continues the same task.
+    for operation, arguments in (("inspect", {}), ("finish", {"base_revision": 3, "observation": json.dumps({**RESERVATION, "child_id": "c", "stop_reason": "completed"})})):
+        assert invoke(workspace, operation, {"task_id": task_id, **arguments})["error"] == "DSH_CONTROLLER_MISMATCH_OR_INACTIVE"
+    assert ok(invoke(workspace, "resume", {}))["tasks"] == []
+    disposed = ok(invoke(workspace, "dispose", {"task_id": task_id, "base_revision": begun["revision"], "reason": "dispatched by the previous root",
+                                                "observation": json.dumps({"correlation": RESERVATION["correlation"], "child_liveness": "UNKNOWN"})}, **new_root))
+    assert ok(invoke(workspace, "close", {"task_id": task_id, "base_revision": disposed["revision"], "decision": "Accepted in the new session."}, **new_root))["status"] == "DONE"
+
+
+def test_attach_to_a_changed_ledger_requires_an_explicit_rollback(workspace):
+    task = start(workspace)
+    task_id = task["task_id"]
+    unanchored(workspace, task_id, "begin", {"base_revision": 1, "observation": json.dumps(RESERVATION)})
+    new_root = {"native_controller_id": "new-root"}
+    refused = invoke(workspace, "inspect", {"task_id": task_id}, **new_root)
+    assert refused["error"] == "TASK_AUTHORITY_STATE_CHANGED" and refused["details"]["anchored_controller"] == "another-root"
+    assert "attach-and-rollback" in refused["recovery"]
+    assert ok(invoke(workspace, "resume", {}, **new_root))["attachable"][0]["state_changed"] is True
+    changed = files(workspace, task_id)
+    digest = anchor_digest(workspace, task_id)
+    plain = invoke(workspace, "attach", {"task_id": task_id, "expected_authority_sha256": digest, "reason": "continue", "rollback": False}, **new_root)
+    assert plain["error"] == "TASK_AUTHORITY_STATE_CHANGED" and files(workspace, task_id) == changed
+    attached = ok(invoke(workspace, "attach", {"task_id": task_id, "expected_authority_sha256": digest, "reason": "continue; discard the unconfirmed begin", "rollback": True}, **new_root))
+    assert (attached["rolled_back"], attached["discarded_revision"], attached["revision"], attached["active_work"]) == (True, 2, 1, 0)
+    assert ok(invoke(workspace, "begin", {"task_id": task_id, "base_revision": 1, "observation": json.dumps(RESERVATION)}, **new_root))["revision"] == 2
+
+
+def test_resume_reports_tasks_it_does_not_show(workspace):
+    tasks = [start(workspace) for _ in range(5)]
+    resumed = ok(invoke(workspace, "resume", {}))
+    assert resumed["task_count"] == 5 and len(resumed["tasks"]) == 4 and resumed["truncated"] is True
+    assert sorted(resumed["omitted_task_ids"] + [item["task_id"] for item in resumed["tasks"]]) == sorted(task["task_id"] for task in tasks)
+    task_anchor_path(workspace, tasks[0]["task_id"]).write_text("{damaged\n")
+    assert ok(invoke(workspace, "resume", {}))["unreadable_count"] == 1
