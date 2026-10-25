@@ -191,7 +191,7 @@ def test_record_capacity_never_blocks_release_or_close(workspace):
                                               "records": [{"id": f"F{index}", "kind": "fact", "text": "x"} for index in range(512)]}))
     assert filled["Task Context"]["Current Record Count"] == 512
     released = run_dispatch(workspace, task_id, 7, terminal="finish")
-    assert released["adapter_records"] == [] and released["unrecorded_reason"] == "CORE_RECORD_CAPACITY: state list exceeds limit"
+    assert released["adapter_records"] == [] and released["unrecorded_reason"].startswith("CORE_RECORD_CAPACITY: state list exceeds limit")
     (unrecorded,) = released["unrecorded"]
     assert unrecorded["kind"] == "dsh-dispatch" and json.loads(unrecorded["text"])["reservation"] == reservation(7)
     current = state(workspace, task_id)["state"]

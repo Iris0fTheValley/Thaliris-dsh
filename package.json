@@ -1,6 +1,6 @@
 {
   "name": "@thaliris/dsh-plugin",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "MIT",
   "repository": "https://github.com/Iris0fTheValley/Thaliris-dsh.git",
   "bugs": "https://github.com/Iris0fTheValley/Thaliris-dsh/issues",
@@ -23,6 +23,7 @@
     "index.mjs",
     "role-templates.mjs",
     "policy.mjs",
+    "dispose-reason.mjs",
     "LICENSE",
     "THIRD-PARTY-NOTICES.md",
     "api.mjs",

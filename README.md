@@ -18,7 +18,7 @@ Thaliris 不另造 Agent Runtime，而是建在 Codex、DeepSeek Harness、Claud
 
 > **状态：Beta。** 在真实的复杂重构任务上，已经观察到实现者自主派发调查、Controller 发起独立审查、反证推动修复的完整链路。样本量还小，不足以证明普遍的质量或成本优势。见[实测观察](#实测观察)。
 >
-> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.2、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.2。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
+> **版本：** 本文描述各仓库 `main` 分支上的源码版本：Core 0.5.3、Codex adapter 0.5.2、Claude Code plugin 0.4.2、DSH plugin 0.3.3。版本号描述源码，不描述某台机器上的安装；仓库或磁盘上的文件更新，也不证明正在运行的 Host 已经加载新版本。
 
 ## 为什么不止于上下文管理
 
@@ -209,7 +209,7 @@ thaliris-core --root . --task-id "$TASK_ID" task-status
 
 ## DSH 原生集成
 
-@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.2，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
+@thaliris/dsh-plugin 将 Thaliris task records 和 Controller 工具接入 DeepSeek Harness。它使用 DSH 原生 Workspace、持久 Session、Agent/subagent、Settings、model catalog、Plugin Manager 和 lifecycle，并通过 Python bridge 调用单独安装的 Thaliris Core（当前配对 Core 0.5.3，见 [Core baseline](CORE-BASELINE.md)）；本仓库不复制 Core 或 Codex adapter。
 
 DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Memory。初始角色模板（Investigator、Implementer、Focused Implementer、Reviewer、Curator、Reasoning Specialist）采用 inherit 路由、不授予工具且不固定模型；路由模式为 inherit、fixed 或 allowed。模板变更不会覆盖已经保存的用户角色记录；角色通过编辑这些用户自有记录来调整，而不是由 Controller 调整。Workspace 精确绑定和持久 root Session 是任务关联的一部分，单凭仓库路径不会恢复旧任务。
 
@@ -219,7 +219,8 @@ DSH 的策略页配置角色提示词、模型路由、工具、Workspace 和 Me
 | --- | --- |
 | `thaliris_task_start` / `thaliris_task_inspect` / `thaliris_task_close` | 确立选定意图、查看显式选定的任务、在 Controller 自行判断后记录机械 DONE |
 | `thaliris_workstream` | 以角色、有界 handoff、可选模型路由与 reasoning effort（Controller 在隔离与分工之后，选择适合该工作集的最便宜允许路由和最低 effort）、可选 evidence association 派发一个全新子代理；reservation 记录所选路由和派发时角色的摘要 |
-| `thaliris_reconcile` | 依据原生终止证据检查或调和崩溃遗留的 reservation；UNKNOWN 不会自动释放 |
+| `thaliris_reconcile` | 依据原生终止证据检查或调和崩溃遗留的 reservation；UNKNOWN 不会自动释放；`dispose`（需 reason）是 Controller 的显式释放，记录为 disposed/UNKNOWN，绝不记为 completed |
+| `thaliris_task_recover` | 显式恢复 authority 锚点：列出需要恢复的任务及本 Workspace 其他 root 可接管的任务；`TASK_AUTHORITY_STATE_CHANGED` 后 `rollback`；按用户指示将本 root `attach` 到 ACTIVE 任务（台账已变时用 `attach-and-rollback`）。需 reason 与 authority 摘要 CAS，从不自动执行 |
 | `thaliris_task_status` | 默认紧凑状态（revision、routing、计数、有界记录、未完成的 dispatch、authority 摘要与模式、未决 evidence 摘要）；`view: "full"` 返回完整状态包，`since_revision` 附加有界变更提示。已结束的 dispatch 是 append-only 的 `dsh-dispatch` Core record，不占用 routing state |
 | `thaliris_task_context` | 记录事实、决策、进展、待办与 milestone；压缩或恢复后，有界摘要会作为 DSH dynamic context 重新提供 |
 | `thaliris_task_register` / `thaliris_task_judge` | 登记不透明的需求；以精确的 observation 引用记录需求判断，可单条或以 `judgments` 原子批量提交。结果携带新 revision 与未决 evidence 摘要；revision 冲突会返回 Core 的 code、recovery 与 `changes_since` |
@@ -251,7 +252,7 @@ npm pack
 ~~~sh
 PROFILE="your-profile"
 ARTIFACT_DIR="/path/to/artifact-directory"
-dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.2.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
+dsh plugin --profile "$PROFILE" add "$ARTIFACT_DIR/thaliris-dsh-plugin-0.3.3.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-0.1.0.tgz" "$ARTIFACT_DIR/thaliris-dsh-memory-local-0.1.0.tgz"
 ~~~
 
 生成的 bundle 默认禁用 runtime/API。启用前配置绝对 pythonExecutable、corePath 和 authorityDirectory，确保 corePath 指向相同 Python 环境中的 Core，并将 authorityDirectory 放在受治理 Workspace 之外。随后在 DSH 注册规范 Git root 为 native Workspace，创建或恢复持久 root Session，并在策略中绑定准确的 Workspace ID 和 root。不要在插件配置里保存凭据。

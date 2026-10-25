@@ -4,17 +4,20 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { readPolicy, selectedRole } from './policy.mjs'
+import { validDisposeReason } from './dispose-reason.mjs'
 export { Config } from './policy.mjs'
 export const name = 'thaliris-dsh'
 export const inject = ['agents', 'systemPrompt', 'tools', 'subagents', 'subprocess', 'workspaceRegistry', 'sessionPersistence', 'llm']
 export const TOOL_NAMES = Object.freeze(['thaliris_task_start', 'thaliris_task_inspect', 'thaliris_workstream', 'thaliris_task_close', 'thaliris_reconcile',
   'thaliris_task_status', 'thaliris_task_context', 'thaliris_task_register', 'thaliris_task_judge', 'thaliris_task_mode',
   'thaliris_task_identity', 'thaliris_task_identity_amend', 'thaliris_task_identity_challenge', 'thaliris_task_identity_relate',
-  'thaliris_task_identity_note', 'thaliris_task_identity_suggest'])
+  'thaliris_task_identity_note', 'thaliris_task_identity_suggest', 'thaliris_task_recover'])
 export const MEMORY_TOOLS = Object.freeze(['thaliris_memory_read', 'thaliris_memory_search', 'thaliris_memory_propose'])
 /** Granted by the adapter only to a child whose dispatch carries an evidence association. */
 export const EVIDENCE_TOOLS = Object.freeze(['thaliris_observe'])
 const bridgePath = fileURLToPath(new URL('./core_bridge.py', import.meta.url))
+const RESTORE_RETRY_MS = 60000
+const TERMINAL_REASONS = ['completed', 'aborted', 'error', 'max-tokens', 'blocked', 'interrupted']
 const string = { type: 'string' }
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false })
 const contractSchema = object({ human_instruction: string, boundary: string, invariants: string, acceptance: string, execution_mode: { type: 'string', enum: ['delegated', 'controller-direct', 'single-agent'] } })
@@ -153,24 +156,25 @@ export function apply(ctx, config) {
   ctx.systemPrompt.context({ name: 'thaliris:task-context', order: ctx.systemPrompt.getContextOrder('SUBAGENT_DELEGATION') + 1,
     text: ({ agent }) => {
       if (disposed || !isNativeRoot(agent)) return ''
-      if (!taskContexts.has(agent.id)) { restoreContext(agent); return '' }
+      if (!restorations.get(agent.id)?.restored) restoreContext(agent)
       return contextText(agent)
     },
   })
   // The provider above is synchronous, so the first assembly after a restart
   // awaits restoration here and fills that same context entry: the first model
-  // step already carries the recorded task context.
+  // step already carries the recorded task context. After a failure the next
+  // attempt waits for RESTORE_RETRY_MS, so a failing bridge never stalls every turn.
   ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const agent = context.agent
-    if (!disposed && isNativeRoot(agent) && !taskContexts.has(agent.id)) {
+    if (!disposed && isNativeRoot(agent) && !restorations.get(agent.id)?.restored) {
       await restoreContext(agent)
       const entry = assembly.contexts.find(item => item.name === 'thaliris:task-context')
-      if (entry && !entry.text && !disposed && taskContexts.has(agent.id)) entry.text = contextText(agent)
+      if (entry && !disposed) entry.text = contextText(agent)
     }
     return next()
   })
   function contextText(agent) {
-    return [...(taskContexts.get(agent.id)?.values() ?? [])].filter(Boolean).join('\n\n')
+    return [restorations.get(agent.id)?.notice, ...(taskContexts.get(agent.id)?.values() ?? [])].filter(Boolean).join('\n\n')
   }
   function rememberContext(agent, taskId, text) {
     if (!agent || typeof taskId !== 'string' || text === undefined) return
@@ -179,17 +183,39 @@ export function apply(ctx, config) {
     else contexts.delete(taskId)
     taskContexts.set(agent.id, contexts)
   }
-  /** After a process restart, restore context for tasks anchored to this exact native root (once; never rejects). */
+  /**
+   * After a process restart, restore context for tasks anchored to this exact native root. Never rejects.
+   * Success is remembered once; a failure is not: it leaves one visible notice line (code and the tool to
+   * use) and is retried on a later assembly. Contexts already re-supplied by a newer result are kept.
+   */
   function restoreContext(agent) {
-    if (restorations.has(agent.id)) return restorations.get(agent.id)
+    const restoration = restorations.get(agent.id) ?? {}
+    if (restoration.pending) return restoration.pending
+    if (restoration.restored || Date.now() < (restoration.retryAt ?? 0)) return Promise.resolve()
     const cancel = new AbortController()
     cancellations.add(cancel)
-    const restoration = bridge(agent, 'resume', {}, cancel.signal).then(result => {
-      if (taskContexts.has(agent.id)) return
-      taskContexts.set(agent.id, new Map(result.tasks.filter(task => task.task_context).map(task => [task.task_id, task.task_context])))
-    }, () => {}).finally(() => cancellations.delete(cancel))
+    restoration.pending = bridge(agent, 'resume', {}, cancel.signal).then(result => {
+      const contexts = taskContexts.get(agent.id) ?? new Map()
+      for (const task of result.tasks) if (task.task_context && !contexts.has(task.task_id)) contexts.set(task.task_id, task.task_context)
+      taskContexts.set(agent.id, contexts)
+      Object.assign(restoration, { restored: true, notice: resumeNotice(result) })
+    }, error => {
+      const code = typeof error?.code === 'string' ? error.code : String(error?.message ?? error).split(/[\s:]/)[0] || 'THALIRIS_BRIDGE_FAILED'
+      Object.assign(restoration, { retryAt: Date.now() + RESTORE_RETRY_MS,
+        notice: `Thaliris: task context was not restored (${code}); it is retried on a later turn. For a known task_id, read thaliris_task_status; thaliris_task_recover action list shows tasks needing recovery.` })
+    }).finally(() => { cancellations.delete(cancel); restoration.pending = undefined })
     restorations.set(agent.id, restoration)
-    return restoration
+    return restoration.pending
+  }
+  /** One line per condition the restored contexts do not show; nothing when all of this root's tasks are restored. */
+  function resumeNotice(result) {
+    const lines = []
+    if (result.recovery_required_count) lines.push(`Thaliris: ${result.recovery_required_count} task(s) of this session need Controller recovery (TASK_AUTHORITY_STATE_CHANGED): ${result.recovery_required.map(task => task.task_id).join(', ')}. Nothing was accepted; see thaliris_task_recover action list.`)
+    if (result.truncated) lines.push(`Thaliris: ${result.task_count - result.tasks.length} more ACTIVE task(s) of this session are not shown here: ${result.omitted_task_ids.join(', ')}; read thaliris_task_status.`)
+    if (result.unreadable_count) lines.push(`Thaliris: ${result.unreadable_count} task anchor(s) of this workspace could not be read; thaliris_task_inspect with a known task_id shows the error.`)
+    // Count only: another root's task ids and context never enter this session's context.
+    if (result.attachable_count && !result.task_count && !result.recovery_required_count) lines.push(`Thaliris: ${result.attachable_count} ACTIVE task(s) of this workspace are anchored to another root session. Only on the user's instruction to continue one here, see thaliris_task_recover action list.`)
+    return lines.join('\n')
   }
   function bridge(agent, operation, args, signal) {
     const pending = bridgeTail.then(() => bridgeExecute(agent, operation, args, signal))
@@ -197,6 +223,8 @@ export function apply(ctx, config) {
     return pending.then(result => {
       if (result && Object.hasOwn(result, 'task_context') && isNativeRoot(agent)) rememberContext(agent, args.task_id, result.task_context)
       if (operation === 'close' && result?.status === 'DONE') rememberContext(agent, args.task_id, null)
+      // A recovered or attached anchor changes what the restoration notice reports: rebuild it on the next assembly.
+      if ((operation === 'recover' || operation === 'attach') && result?.ok) restorations.delete(agent.id)
       // The bounded summary is already re-supplied as dynamic context; the full status view keeps it for explicit reads.
       if (result && Object.hasOwn(result, 'task_context') && operation !== 'resume' && !(operation === 'status' && args.view === 'full')) { const { task_context, ...visible } = result; return visible }
       return result
@@ -362,6 +390,15 @@ export function apply(ctx, config) {
       return bridge(grant.parent, 'observe', { task_id: grant.taskId, handoff_id: grant.evidence.handoff_id, child_id: agent.id, observation: args }, signal)
     }, true)
 
+  /** A short failure code for UNKNOWN reasons: never a payload, path or stack. */
+  const failureCode = error => typeof error?.code === 'string' ? error.code : String(error?.message ?? error).split(/[\s:]/)[0] || 'UNKNOWN_ERROR'
+  function realDirectory(path) {
+    try { return realpathSync(path) } catch { return undefined }
+  }
+  /**
+   * Native catalog correlation plus durable terminal Session evidence. Missing or unreadable native
+   * state (child Session file, working directory) is UNKNOWN with a reason; an identity conflict throws.
+   */
   async function nativeObservation(agent, reservation, signal, cancel) {
     const own = agent.session.snapshotEvents().filter(event => event.type === 'subagent/catalog' && event.data.label === reservation.correlation)
     const ids = [...new Set(own.map(event => event.data.childId))]
@@ -375,31 +412,80 @@ export function apply(ctx, config) {
       await live.whenIdle()
       await ctx.sessionPersistence.flush()
     }
-    const handle = await ctx.sessionPersistence.open(id, 'read', { signal })
+    const unreadable = error => { signal?.throwIfAborted(); return { child_id: id, outcome: 'UNKNOWN', reason: `native child Session unreadable (${failureCode(error)})` } }
+    let handle
+    try { handle = await ctx.sessionPersistence.open(id, 'read', { signal }) } catch (error) { return unreadable(error) }
     try {
-      if (handle.header.parentSession !== agent.id || handle.header.isSeeded !== false || handle.header.origin !== 'subagent'
-        || realpathSync(handle.header.cwd) !== realpathSync(agent.session.header.cwd)) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
-      const { events } = await handle.read(0, undefined, { signal })
+      if (handle.header.parentSession !== agent.id || handle.header.isSeeded !== false || handle.header.origin !== 'subagent') throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      const childCwd = realDirectory(handle.header.cwd), rootCwd = realDirectory(agent.session.header.cwd)
+      if (!childCwd || !rootCwd) return { child_id: id, outcome: 'UNKNOWN', reason: 'native child or root working directory unavailable' }
+      if (childCwd !== rootCwd) throw new Error('THALIRIS_NATIVE_CHILD_IDENTITY_REQUIRED')
+      let events
+      try { ({ events } = await handle.read(0, undefined, { signal })) } catch (error) { return unreadable(error) }
       const start = events.filter(event => event.type === 'turn/start').at(-1)
       const end = events.filter(event => event.type === 'turn/end').at(-1)
-      if (!start || !end || end.seq < start.seq || !['completed', 'aborted', 'error', 'max-tokens', 'blocked', 'interrupted'].includes(end.data.reason.kind)) return { child_id: id, outcome: 'UNKNOWN', reason: 'durable native terminal reason unavailable' }
+      if (!start || !end || end.seq < start.seq || !TERMINAL_REASONS.includes(end.data?.reason?.kind)) return { child_id: id, outcome: 'UNKNOWN', reason: 'durable native terminal reason unavailable' }
       return { child_id: id, outcome: end.data.reason.kind, terminal_seq: end.seq, terminal_reason: end.data.reason, provenance: 'native-session-turn/end' }
-    } finally { await handle.close() }
+    } finally { try { await handle.close() } catch { /* a read-only handle; the observation above stands */ } }
+  }
+  /**
+   * Before a Controller dispose: a child of this reservation resident in this process is cancelled first;
+   * one resident under another root is refused. Liveness outside this process stays UNKNOWN.
+   */
+  async function disposeLiveness(agent, reservation) {
+    const ids = new Set(agent.session.snapshotEvents().filter(event => event.type === 'subagent/catalog' && event.data.label === reservation.correlation).map(event => event.data.childId))
+    if (reservation.child_id) ids.add(reservation.child_id)
+    const child_id = reservation.child_id ?? (ids.size === 1 ? [...ids][0] : undefined)
+    if (!ids.size) return { child_liveness: 'UNKNOWN', liveness_reason: 'no native child is correlated with this reservation in this session' }
+    let cancelled = false
+    for (const id of ids) {
+      const live = ctx.agents.get(id)
+      if (!live) continue
+      if (live.session.header.parentSession !== agent.id) throw new Error('THALIRIS_NATIVE_CHILD_RESIDENT_ELSEWHERE: stop the child in its owning root first')
+      live.cancel({ kind: 'parent' })
+      await live.whenIdle()
+      cancelled = true
+    }
+    if (cancelled) await ctx.sessionPersistence.flush()
+    return { ...(child_id ? { child_id } : {}), child_liveness: cancelled ? 'cancelled' : 'not-resident',
+      ...(cancelled ? {} : { liveness_reason: 'not resident in this process; liveness elsewhere is UNKNOWN' }) }
   }
   async function reconcile(agent, args, signal) {
     // A stale revision is refused by the bridge with the structured conflict (code, recovery, changes_since).
     const inspected = await bridge(agent, 'inspect', { task_id: args.task_id, base_revision: args.base_revision }, signal)
     if (inspected.state.active_work.length !== 1) throw new Error('THALIRIS_RESERVATION_REQUIRED')
-    const reservation = JSON.parse(inspected.state.active_work[0])
+    let reservation
+    try { reservation = JSON.parse(inspected.state.active_work[0]) } catch { reservation = {} }
+    if (!reservation || typeof reservation !== 'object') reservation = {}
+    if (args.action === 'dispose') {
+      // Controller decision for a reservation native evidence cannot resolve: recorded as disposed, native outcome UNKNOWN, never completed.
+      const liveness = await disposeLiveness(agent, reservation)
+      const released = await bridge(agent, 'dispose', { task_id: args.task_id, base_revision: args.base_revision, reason: args.reason, observation: JSON.stringify({ correlation: reservation.correlation, ...liveness }) }, signal)
+      return { ...released, ...liveness, released: true, native_completed: false }
+    }
     const observation = await nativeObservation(agent, reservation, signal, args.action === 'cancel-reconcile')
     if (args.action === 'check' || observation.outcome === 'UNKNOWN') return { ...observation, released: false }
     return { ...await bridge(agent, 'reconcile', { task_id: args.task_id, base_revision: args.base_revision, observation: JSON.stringify({ ...reservation, ...observation }) }, signal), ...observation, released: true, native_completed: observation.outcome === 'completed' }
   }
-  register(TOOL_NAMES[4], 'Check/reconcile a crash reservation using native catalog and durable terminal Session evidence. UNKNOWN never auto releases.',
-    object({ ...identitySchema, action: { type: 'string', enum: ['check', 'reconcile', 'cancel-reconcile'] } }), async (args, agent, signal) => {
+  register(TOOL_NAMES[4], 'Check/reconcile a crash reservation using native catalog and durable terminal Session evidence. UNKNOWN never auto releases. action dispose (with a reason) is the Controller\'s explicit release of a reservation native evidence cannot resolve: a resident child of this session is cancelled first, and the dispatch is recorded as disposed with native outcome UNKNOWN, never completed.',
+    object({ ...identitySchema, action: { type: 'string', enum: ['check', 'reconcile', 'cancel-reconcile', 'dispose'] }, reason: string }, [...Object.keys(identitySchema), 'action']), async (args, agent, signal) => {
+      if ((args.action === 'dispose') !== (typeof args.reason === 'string')) throw new Error('THALIRIS_INVALID_ARGUMENTS: reason is required for dispose and accepted only there')
+      if (args.action === 'dispose' && !validDisposeReason(args.reason)) throw new Error('THALIRIS_INVALID_ARGUMENTS: dispose reason must be non-blank and at most 3500 characters; nothing was cancelled')
       const result = await reconcile(agent, args, signal)
       if (result.released) await bridge(agent, 'inspect', { task_id: args.task_id }, signal).catch(() => {})
       return result
+    })
+  register(TOOL_NAMES[16], 'Controller-only explicit anchor recovery; nothing here happens automatically. action list: tasks of this session that need recovery and ACTIVE tasks of this workspace anchored to another root (ids, digests). rollback: after TASK_AUTHORITY_STATE_CHANGED (an interrupted, unconfirmed write) archive the current ledger bytes and restore the last anchored state. attach: only on the user\'s instruction, make this root session the only Controller of an ACTIVE task of this workspace (Task ID, goal, contract, mode and evidence stay; the previous root is refused); attach-and-rollback also restores the last anchored state. Every change needs expected_authority_sha256 (from the error details or list) and a reason.',
+    object({ task_id: string, action: { type: 'string', enum: ['list', 'rollback', 'attach', 'attach-and-rollback'] }, expected_authority_sha256: string, reason: string }, ['action']), async (args, agent, signal) => {
+      if (args.action === 'list') {
+        if (Object.keys(args).length !== 1) throw new Error('THALIRIS_INVALID_ARGUMENTS: action list takes no other arguments')
+        const { tasks, ...listed } = await bridge(agent, 'resume', {}, signal)
+        return { ...listed, tasks: tasks.map(({ task_context, ...task }) => task) }
+      }
+      const { task_id, expected_authority_sha256, reason } = args
+      if (typeof task_id !== 'string' || typeof expected_authority_sha256 !== 'string' || typeof reason !== 'string') throw new Error('THALIRIS_INVALID_ARGUMENTS: task_id, expected_authority_sha256 and reason are required')
+      return args.action === 'rollback' ? bridge(agent, 'recover', { task_id, expected_authority_sha256, reason }, signal)
+        : bridge(agent, 'attach', { task_id, expected_authority_sha256, reason, rollback: args.action === 'attach-and-rollback' }, signal)
     })
 
   async function memory(args, agent, signal, operation) {
@@ -438,7 +524,12 @@ export function apply(ctx, config) {
     diagnostics: async (sessionId, taskId, signal) => withNativeRoot(sessionId, signal, async agent => {
       const task = await bridge(agent, 'inspect', { task_id: taskId }, signal)
       return { task, workspace: await binding(agent), configurationRevision: ctx.get('settings')?.describe({ redactSecrets: true }).find(row => row.ns === ctx.get('configEditor')?.entries().find(entry => entry.fiber?.runtime?.name === name)?.options.id)?.revision ?? null, permissions: { memory: readPolicy(config).memory, roles: readPolicy(config).roles.map(({ id, enabled, tools, memory, context, modelPolicy }) => ({ id, enabled, tools, memory, context, modelPolicy })) },
-        providers: ctx.get('thalirisMemory')?.list() ?? [], reservations: await Promise.all(task.state.active_work.map(async value => ({ reservation: JSON.parse(value), native: await nativeObservation(agent, JSON.parse(value), signal, false) }))) }
+        providers: ctx.get('thalirisMemory')?.list() ?? [], reservations: await Promise.all(task.state.active_work.map(async value => {
+          // One unreadable reservation is reported as UNKNOWN; it never fails the whole diagnostics read.
+          let reservation
+          try { reservation = JSON.parse(value) } catch { return { reservation: value, native: { outcome: 'UNKNOWN', reason: 'reservation is not adapter JSON' } } }
+          return { reservation, native: await nativeObservation(agent, reservation ?? {}, signal, false).catch(error => { signal?.throwIfAborted(); return { outcome: 'UNKNOWN', reason: `native observation failed (${failureCode(error)})` } }) }
+        })) }
     }),
     approveMemory: async (sessionId, taskId, proposalId, signal) => withNativeRoot(sessionId, signal, async agent => {
       const bound = await binding(agent), policy = readPolicy(config)
